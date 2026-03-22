@@ -273,3 +273,12 @@ After completing any non-trivial task, walk through this checklist with the user
 Track known improvements or deferred work here. Remove items as they're completed.
 
 - (none currently)
+
+## Security Decisions & Tradeoffs
+
+Running log of security-relevant choices and their rationale.
+
+- **`check_same_thread=False` on SQLite connections** (`web/app/db.py`): Required because uvicorn's thread pool dispatches async endpoint handlers across threads, but SQLite's default `check_same_thread=True` forbids cross-thread use. Safe here because connections are read-only (`?mode=ro`), scoped to a single request (opened and closed in the `get_connection` generator), and never shared between concurrent requests.
+- **Dashboard binds to `127.0.0.1:8000`**: Not exposed to the internet. Access is SSH-tunnel-only, so there's no public attack surface. Authentication is deferred — the SSH tunnel itself is the access control.
+- **`MemoryMax=200M` on dashboard service**: Hard OOM kill boundary prevents a runaway dashboard process from starving the scraper (which needs 500-800MB for Selenium/Chrome). Trades dashboard availability for system stability.
+- **CI/CD uses passwordless sudo for `systemctl restart`**: Relies on GCP Compute Engine's default sudoers config (`/etc/sudoers.d/google_sudoers`) granting the primary SSH user full passwordless sudo. Acceptable because the VM is single-purpose and single-user.

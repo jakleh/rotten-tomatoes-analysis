@@ -10,7 +10,7 @@ from app.config import DB_PATH, MOVIES_JSON_PATH
 
 def get_connection() -> Generator[sqlite3.Connection]:
     """Yield a read-only SQLite connection scoped to a single request."""
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
