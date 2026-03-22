@@ -12,10 +12,10 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 ├── tests/
 │   └── test_rotten_tomatoes.py # 62 tests (all pure logic, no network/browser)
 ├── deploy/
-│   ├── setup_vm.sh            # GCP VM setup script (installs deps, cron, Ops Agent)
+│   ├── setup_vm.sh            # GCP VM setup script (installs deps, cron, Ops Agent, dashboard)
 │   ├── backup_db.sh           # Daily GCS backup of reviews.db
 │   ├── cleanup_csv.sh         # Daily cleanup of reference CSVs older than 30 days
-│   └── ops-agent-config.yaml  # Ops Agent config (ships logs to Cloud Logging)
+│   └── ops-agent-config.yaml  # Ops Agent config (ships scraper + dashboard logs to Cloud Logging)
 ├── web/                       # Analytics dashboard (FastAPI + Jinja2 + HTMX)
 │   ├── pyproject.toml         # Separate deps (fastapi, uvicorn, jinja2, plotly, fpdf2)
 │   ├── app/
@@ -47,7 +47,8 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 │   │       ├── style.css      # Full styling (nav, table, analytics, stats grid)
 │   │       └── app.js         # Minimal JS (Plotly resize hook)
 │   ├── tests/                 # 72 tests (review service, cache, math, analytics)
-│   └── deploy/                # systemd unit, setup script, tunnel helper
+│   └── deploy/
+│       └── rt-dashboard.service  # systemd unit for dashboard
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml         # GitHub Actions: auto-deploy to GCP VM on push to main
@@ -97,8 +98,8 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **GCS backups** — `deploy/backup_db.sh` copies `reviews.db` to `gs://rotten-tomatoes-scraper-backups/reviews-YYYY-MM-DD.db` daily at 3 AM via cron. Uses VM's default service account (needs `Storage Object Admin` role on the bucket, `cloud-platform` scope on the VM).
 - **CSV cleanup** — `deploy/cleanup_csv.sh` deletes `*_reference.csv` files older than 30 days. Runs daily at 4 AM via cron.
 - **Email notifications** — Google Cloud Ops Agent ships `scraper.log` and `cron.log` to Cloud Logging. Cloud Monitoring alert policy emails on ERROR-level entries (pre-check failures, Selenium errors, backup failures).
-- **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, Ops Agent, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
-- **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs `rotten_tomatoes.py` and `movies.json` as `jakelehner@rt-scraper`, then runs `uv sync` via SSH.
+- **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps (scraper + dashboard), Ops Agent, sets up cron (including daily backup and CSV cleanup), and registers `rt-dashboard` systemd service. VM has 2GB swap file (needed for e2-micro's 1GB RAM).
+- **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs scraper files + `web/` directory as `jakelehner@rt-scraper`, runs `uv sync` for both, restarts `rt-dashboard` service.
 - **62 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence. All use in-memory SQLite and mocks.
 
 ### Dashboard (web/) — In Progress
@@ -125,8 +126,14 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **HTMX interactions** — Movie dropdown triggers both chart and stats reload. Chart type dropdown triggers chart reload. Both use `hx-include` to pass sibling control values.
 - **56 new tests** (72 total) — covering cache (key building, get/set, expiry, clear), all four math modules (empty data, single review, mixed sentiment, edge cases), and analytics service (chart JSON validity for all 6 types, stats computation, movie filtering, caching)
 
+**Phase 3 complete (VM Deployment):**
+- **systemd service** — `web/deploy/rt-dashboard.service` runs uvicorn as `jakelehner` user, binds to `127.0.0.1:8000`, single worker, memory-limited (`MemoryHigh=150M`, `MemoryMax=200M`)
+- **VM setup** — `deploy/setup_vm.sh` updated to [7/7] steps: installs dashboard deps (`uv sync` in `web/`), copies unit file, enables and starts service
+- **CI/CD** — `.github/workflows/deploy.yml` triggers on `web/**`, SCPs `web/` recursively, syncs deps, restarts `rt-dashboard` service
+- **Log shipping** — `deploy/ops-agent-config.yaml` adds `dashboard_log` receiver for `dashboard.log`, shipped to Cloud Logging via `rt_dashboard` pipeline
+- **Memory budget** — Dashboard uses ~40-60MB RSS (no plotly/matplotlib imports at runtime). `MemoryHigh=150M`, `MemoryMax=200M` leaves 800MB+ for intermittent Selenium scraper
+
 **Remaining phases:**
-- Phase 3: Deploy to VM as systemd service (validate memory budget before adding PDF)
 - Phase 4: Report page with document preview + fpdf2/matplotlib PDF generation (with `asyncio.Semaphore(1)` to serialize renders)
 
 ## Database Schema
@@ -221,9 +228,11 @@ cd web && uv run --group dev pytest tests/ -v
   - `0 */6 * * *` — day window
   - `0 3 * * *` — daily DB backup to GCS
   - `0 4 * * *` — daily CSV cleanup (30+ days old)
-- **Logs**: `cron.log` (cron stdout/stderr), `scraper.log` (Python logging)
+- **Logs**: `cron.log` (cron stdout/stderr), `scraper.log` (Python logging), `dashboard.log` (uvicorn output)
+- **Dashboard**: `rt-dashboard.service` (systemd), binds to `127.0.0.1:8000`, memory-limited (`MemoryHigh=150M`, `MemoryMax=200M`)
+- **Dashboard access**: `ssh -L 8000:127.0.0.1:8000 jakelehner@<vm-ip>` then open `http://localhost:8000`
 - **SSH**: `gcloud compute ssh rt-scraper --zone=us-east1-b`
-- **Deploy**: Push to `main` — GitHub Actions auto-deploys via `.github/workflows/deploy.yml`
+- **Deploy**: Push to `main` — GitHub Actions auto-deploys scraper + dashboard via `.github/workflows/deploy.yml`
 - **Manual deploy** (if needed): `gcloud compute scp rotten_tomatoes.py movies.json jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
 - **CI/CD auth**: Workload Identity Federation — pool `github`, provider `github-actions`, SA `github-deploy@rotten-tomatoes-scraper.iam.gserviceaccount.com`
 - **GitHub secrets**: `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`

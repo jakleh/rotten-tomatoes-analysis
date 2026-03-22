@@ -9,6 +9,7 @@ on:
       - "movies.json"
       - "pyproject.toml"
       - "deploy/**"
+      - "web/**"
       - ".github/workflows/**"
 
 jobs:
@@ -32,7 +33,7 @@ jobs:
       - name: Set up SSH key
         run: ssh-keygen -t rsa -f ~/.ssh/google_compute_engine -N "" -q
 
-      - name: Deploy files to VM
+      - name: Deploy scraper files to VM
         run: |
           gcloud compute scp \
             rotten_tomatoes.py \
@@ -41,9 +42,17 @@ jobs:
             --zone=us-east1-b \
             --quiet
 
-      - name: Sync dependencies on VM
+      - name: Deploy dashboard to VM
+        run: |
+          gcloud compute scp --recurse \
+            web/ \
+            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/web/ \
+            --zone=us-east1-b \
+            --quiet
+
+      - name: Sync dependencies and restart dashboard
         run: |
           gcloud compute ssh jakelehner@rt-scraper \
             --zone=us-east1-b \
             --quiet \
-            --command="cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync"
+            --command="cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync && cd web && ~/.local/bin/uv sync && sudo systemctl restart rt-dashboard"
