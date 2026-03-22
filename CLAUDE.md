@@ -69,6 +69,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 | timestamp | TEXT | UTC datetime string |
 | unique_review_id | TEXT (UNIQUE) | MD5 hash of (name + publication + rating) |
 | subjective_score | TEXT | e.g., "3/5", "A-" |
+| tomatometer_sentiment | TEXT | e.g., "positive", "negative" (from score-icon-critics element) |
 | reconciled_timestamp | INTEGER | 1 if timestamp was interpolated |
 | reviewer_name | TEXT | |
 | publication_name | TEXT | |

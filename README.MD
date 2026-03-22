@@ -41,6 +41,7 @@ Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name 
 | `timestamp` | TEXT | UTC datetime |
 | `unique_review_id` | TEXT (UNIQUE) | MD5 hash for deduplication |
 | `subjective_score` | TEXT | e.g., `3/5`, `A-` |
+| `tomatometer_sentiment` | TEXT | e.g., `positive`, `negative` |
 | `reconciled_timestamp` | INTEGER | `1` if timestamp was interpolated |
 | `reviewer_name` | TEXT | |
 | `publication_name` | TEXT | |

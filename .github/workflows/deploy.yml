@@ -1,0 +1,42 @@
+name: Deploy to GCP VM
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rotten_tomatoes.py"
+      - "movies.json"
+      - "pyproject.toml"
+      - "deploy/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy files to VM
+        run: |
+          gcloud compute scp \
+            rotten_tomatoes.py \
+            movies.json \
+            rt-scraper:~/rotten-tomatoes-analysis/ \
+            --zone=us-east1-b
+
+      - name: Sync dependencies on VM
+        run: |
+          gcloud compute ssh rt-scraper --zone=us-east1-b --command="
+            cd ~/rotten-tomatoes-analysis && uv sync
+          "

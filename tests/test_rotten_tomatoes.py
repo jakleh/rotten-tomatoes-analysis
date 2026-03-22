@@ -192,6 +192,26 @@ class TestInsertReview:
         assert r1["unique_review_id"] in ids
         assert r2["unique_review_id"] in ids
 
+    def test_tomatometer_sentiment_persisted(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment="positive")
+        insert_review(conn, self.SLUG, review)
+        row = conn.execute(
+            "SELECT tomatometer_sentiment FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row["tomatometer_sentiment"] == "positive"
+
+    def test_tomatometer_sentiment_none_when_missing(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment=None)
+        insert_review(conn, self.SLUG, review)
+        row = conn.execute(
+            "SELECT tomatometer_sentiment FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row["tomatometer_sentiment"] is None
+
 
 # ── interpolate_timestamps ────────────────────────────────────────────────────
 

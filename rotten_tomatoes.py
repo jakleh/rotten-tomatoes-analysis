@@ -173,17 +173,25 @@ def init_reviews_table(conn: sqlite3.Connection) -> None:
     """Create the unified reviews table if it doesn't already exist."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
-            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-            movie_slug           TEXT NOT NULL,
-            timestamp            TEXT NOT NULL,
-            unique_review_id     TEXT UNIQUE NOT NULL,
-            subjective_score     TEXT,
-            reconciled_timestamp INTEGER NOT NULL DEFAULT 0,
-            reviewer_name        TEXT,
-            publication_name     TEXT,
-            top_critic           INTEGER NOT NULL DEFAULT 0
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            movie_slug            TEXT NOT NULL,
+            timestamp             TEXT NOT NULL,
+            unique_review_id      TEXT UNIQUE NOT NULL,
+            subjective_score      TEXT,
+            tomatometer_sentiment TEXT,
+            reconciled_timestamp  INTEGER NOT NULL DEFAULT 0,
+            reviewer_name         TEXT,
+            publication_name      TEXT,
+            top_critic            INTEGER NOT NULL DEFAULT 0
         )
     """)
+    # Migration: add tomatometer_sentiment to existing tables that lack it.
+    try:
+        conn.execute("ALTER TABLE reviews ADD COLUMN tomatometer_sentiment TEXT")
+        conn.commit()
+        log.info("Migrated reviews table: added tomatometer_sentiment column.")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     log.debug("Reviews table ready.")
 
@@ -258,14 +266,16 @@ def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bo
             """
             INSERT INTO reviews
                 (movie_slug, timestamp, unique_review_id, subjective_score,
-                 reconciled_timestamp, reviewer_name, publication_name, top_critic)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 tomatometer_sentiment, reconciled_timestamp, reviewer_name,
+                 publication_name, top_critic)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 movie_slug,
                 review["timestamp"],
                 review["unique_review_id"],
                 review.get("subjective_score"),
+                review.get("tomatometer_sentiment"),
                 int(bool(review.get("reconciled_timestamp", False))),
                 review.get("reviewer_name"),
                 review.get("publication_name"),
@@ -303,7 +313,8 @@ def export_reference_csv(conn: sqlite3.Connection, movie_slug: str, critic_filte
     filename = f"{movie_slug}_{critic_filter}_{ts}_reference.csv"
     fieldnames = [
         "id", "movie_slug", "timestamp", "unique_review_id", "subjective_score",
-        "reconciled_timestamp", "reviewer_name", "publication_name", "top_critic",
+        "tomatometer_sentiment", "reconciled_timestamp", "reviewer_name",
+        "publication_name", "top_critic",
     ]
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
