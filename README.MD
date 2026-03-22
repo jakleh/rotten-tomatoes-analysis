@@ -104,7 +104,16 @@ All tests use in-memory SQLite and mocks — no network or browser required.
 
 ## Deployment
 
-The scraper runs on a GCP e2-micro VM (free tier, Debian 12) with cron scheduling.
+The scraper runs on a GCP e2-micro VM (free tier, Debian 12) with cron scheduling. Code is auto-deployed via GitHub Actions on push to `main`.
+
+### CI/CD
+
+Pushing to `main` triggers `.github/workflows/deploy.yml`, which:
+1. Authenticates with GCP via Workload Identity Federation (no stored keys)
+2. SCPs `rotten_tomatoes.py` and `movies.json` to the VM
+3. Runs `uv sync` on the VM to update dependencies
+
+The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.json`, `pyproject.toml`, `deploy/**`, `.github/workflows/**`. It can also be triggered manually from the Actions tab.
 
 ### Cron Schedule
 
@@ -115,17 +124,15 @@ The scraper runs on a GCP e2-micro VM (free tier, Debian 12) with cron schedulin
 | `0 3 * * *` | Daily DB backup to GCS |
 | `0 4 * * *` | Daily cleanup of reference CSVs older than 30 days |
 
-### VM Setup
+### Manual VM Access
 
 ```bash
 # SSH into the VM
 gcloud compute ssh rt-scraper --zone=us-east1-b
 
-# Deploy updated scraper code
-gcloud compute scp rotten_tomatoes.py rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
-
-# Deploy updated movie config
-gcloud compute scp movies.json rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
+# Manual deploy (if CI/CD is unavailable)
+gcloud compute scp rotten_tomatoes.py movies.json \
+  jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
 
 # Full VM setup (installs deps, Chrome, cron, Ops Agent)
 # Run deploy/setup_vm.sh on the VM
@@ -140,15 +147,18 @@ gcloud compute scp movies.json rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-
 ## Project Structure
 
 ```
-├── rotten_tomatoes.py          # Main scraper
-├── movies.json                 # Movie config: [{slug, enabled}]
+├── rotten_tomatoes.py           # Main scraper
+├── movies.json                  # Movie config: [{slug, enabled}]
 ├── tests/
-│   └── test_rotten_tomatoes.py # Tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # Tests (pure logic, no network/browser)
 ├── deploy/
-│   ├── setup_vm.sh             # GCP VM provisioning script
-│   ├── backup_db.sh            # Daily GCS backup
-│   ├── cleanup_csv.sh          # Daily reference CSV cleanup
-│   └── ops-agent-config.yaml   # Cloud Logging agent config
-├── pyproject.toml              # Dependencies (uv managed)
-└── uv.lock                     # Lockfile
+│   ├── setup_vm.sh              # GCP VM provisioning script
+│   ├── backup_db.sh             # Daily GCS backup
+│   ├── cleanup_csv.sh           # Daily reference CSV cleanup
+│   └── ops-agent-config.yaml    # Cloud Logging agent config
+├── .github/
+│   └── workflows/
+│       └── deploy.yml           # GitHub Actions: auto-deploy on push to main
+├── pyproject.toml               # Dependencies (uv managed)
+└── uv.lock                      # Lockfile
 ```

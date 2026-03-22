@@ -10,15 +10,18 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ├── rotten_tomatoes.py          # Main scraper (scraping, DB, reconciliation, pre-check)
 ├── movies.json                # Movie config: list of {slug, enabled} objects
 ├── tests/
-│   └── test_rotten_tomatoes.py # 64 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 62 tests (all pure logic, no network/browser)
 ├── deploy/
 │   ├── setup_vm.sh            # GCP VM setup script (installs deps, cron, Ops Agent)
 │   ├── backup_db.sh           # Daily GCS backup of reviews.db
 │   ├── cleanup_csv.sh         # Daily cleanup of reference CSVs older than 30 days
 │   └── ops-agent-config.yaml  # Ops Agent config (ships logs to Cloud Logging)
+├── .github/
+│   └── workflows/
+│       └── deploy.yml         # GitHub Actions: auto-deploy to GCP VM on push to main
 ├── pyproject.toml             # Dependencies (uv managed, Python >=3.14)
 ├── .gitignore
-├── README.MD                  # Original architecture spec
+├── README.MD                  # Project documentation
 └── .claude/                   # Claude Code config
 ```
 
@@ -30,6 +33,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Database**: SQLite (`reviews.db`)
 - **Pre-check**: `requests` library (lightweight HTTP to skip unnecessary Selenium runs)
 - **Deployment**: GCP e2-micro VM (free tier, Debian 12) + cron
+- **CI/CD**: GitHub Actions (auto-deploy on push to main via Workload Identity Federation)
 
 ## Resolved Design Decisions
 
@@ -56,7 +60,8 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **CSV cleanup** — `deploy/cleanup_csv.sh` deletes `*_reference.csv` files older than 30 days. Runs daily at 4 AM via cron.
 - **Email notifications** — Google Cloud Ops Agent ships `scraper.log` and `cron.log` to Cloud Logging. Cloud Monitoring alert policy emails on ERROR-level entries (pre-check failures, Selenium errors, backup failures).
 - **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, Ops Agent, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
-- **60 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading. All use in-memory SQLite and mocks.
+- **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs `rotten_tomatoes.py` and `movies.json` as `jakelehner@rt-scraper`, then runs `uv sync` via SSH.
+- **62 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence. All use in-memory SQLite and mocks.
 
 ## Database Schema
 
@@ -138,8 +143,10 @@ uv run --group dev pytest tests/ -v
   - `0 4 * * *` — daily CSV cleanup (30+ days old)
 - **Logs**: `cron.log` (cron stdout/stderr), `scraper.log` (Python logging)
 - **SSH**: `gcloud compute ssh rt-scraper --zone=us-east1-b`
-- **Deploy code**: `gcloud compute scp ~/Desktop/rotten-tomatoes-analysis/rotten_tomatoes.py rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
-- **Deploy config**: `gcloud compute scp ~/Desktop/rotten-tomatoes-analysis/movies.json rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
+- **Deploy**: Push to `main` — GitHub Actions auto-deploys via `.github/workflows/deploy.yml`
+- **Manual deploy** (if needed): `gcloud compute scp rotten_tomatoes.py movies.json jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
+- **CI/CD auth**: Workload Identity Federation — pool `github`, provider `github-actions`, SA `github-deploy@rotten-tomatoes-scraper.iam.gserviceaccount.com`
+- **GitHub secrets**: `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`
 
 ## Dependencies
 
