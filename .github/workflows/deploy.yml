@@ -46,7 +46,7 @@ jobs:
         run: |
           gcloud compute scp --recurse \
             web/ \
-            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/web/ \
+            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
             --zone=us-east1-b \
             --quiet
 
