@@ -42,6 +42,14 @@ jobs:
             --zone=us-east1-b \
             --quiet
 
+      - name: Deploy scripts to VM
+        run: |
+          gcloud compute scp --recurse \
+            deploy/ \
+            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
+            --zone=us-east1-b \
+            --quiet
+
       - name: Deploy dashboard to VM
         run: |
           gcloud compute scp --recurse \
