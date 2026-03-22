@@ -34,12 +34,13 @@ jobs:
           gcloud compute scp \
             rotten_tomatoes.py \
             movies.json \
-            rt-scraper:~/rotten-tomatoes-analysis/ \
+            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
             --zone=us-east1-b \
             --quiet
 
       - name: Sync dependencies on VM
         run: |
-          gcloud compute ssh rt-scraper --zone=us-east1-b --quiet --command="
-            cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync
-          "
+          gcloud compute ssh jakelehner@rt-scraper \
+            --zone=us-east1-b \
+            --quiet \
+            --command="cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync"
