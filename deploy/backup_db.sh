@@ -14,5 +14,5 @@ if [ ! -f "$DB_PATH" ]; then
     exit 0
 fi
 
-gsutil cp "$DB_PATH" "$BUCKET/reviews-$DATE.db"
+gcloud storage cp "$DB_PATH" "$BUCKET/reviews-$DATE.db"
 echo "Backup complete: $BUCKET/reviews-$DATE.db"
