@@ -38,5 +38,5 @@ jobs:
       - name: Sync dependencies on VM
         run: |
           gcloud compute ssh rt-scraper --zone=us-east1-b --command="
-            cd ~/rotten-tomatoes-analysis && uv sync
+            cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync
           "
