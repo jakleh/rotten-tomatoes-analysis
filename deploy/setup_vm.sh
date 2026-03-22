@@ -42,8 +42,8 @@ uv sync
 echo ""
 echo "[4/4] Installing cron jobs..."
 
-# Remove any existing RT scraper cron entries, then add fresh ones.
-(crontab -l 2>/dev/null | grep -v "rotten_tomatoes.py" | grep -v "backup_db.sh" | grep -v "cleanup_csv.sh" || true) | crontab -
+# Remove the entire RT scraper block (everything between markers), then add fresh.
+(crontab -l 2>/dev/null | sed '/^# Rotten Tomatoes scraper/,/^$/d' | sed '/^CHROME_BIN=/d' || true) | crontab -
 
 (crontab -l 2>/dev/null; cat <<EOF
 
@@ -53,6 +53,7 @@ CHROME_BIN=$CHROME_BIN
 0 */6 * * * cd $PROJECT_DIR && $UV run python rotten_tomatoes.py --window day  >> $CRON_LOG 2>&1
 0 3 * * * $PROJECT_DIR/deploy/backup_db.sh >> $CRON_LOG 2>&1
 0 4 * * * $PROJECT_DIR/deploy/cleanup_csv.sh >> $CRON_LOG 2>&1
+# End Rotten Tomatoes scraper
 EOF
 ) | crontab -
 
@@ -60,7 +61,7 @@ echo ""
 echo "=== Setup complete! ==="
 echo ""
 echo "Cron jobs installed:"
-crontab -l | grep -A3 "Rotten Tomatoes"
+crontab -l | sed -n '/^# Rotten Tomatoes scraper/,/^# End Rotten Tomatoes/p'
 echo ""
 echo "The hour window will run every 5 minutes."
 echo "The day window will run every 6 hours."
