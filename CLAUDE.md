@@ -153,3 +153,34 @@ uv run --group dev pytest tests/ -v
 Managed via `pyproject.toml` + `uv.lock`:
 - beautifulsoup4, selenium, requests, pandas, matplotlib
 - Dev: pytest
+
+## Workflow: Milestone Checklist
+
+After completing any non-trivial task, walk through this checklist with the user before considering the work done.
+
+### Code Quality
+- [ ] Tests added or updated for new/changed behavior
+- [ ] All tests pass: `uv run --group dev pytest tests/ -v`
+- [ ] No leftover TODOs, debug prints, or commented-out code from this change
+- [ ] DB schema changes include migration logic in `init_reviews_table`
+
+### Documentation
+- [ ] `CLAUDE.md` updated if: schema changed, new files added, new features implemented, deployment process changed, or design decisions were made
+- [ ] `README.MD` updated if: user-facing behavior changed, setup steps changed, or project structure changed
+- [ ] File structure section in both docs reflects any new/removed files
+
+### Git & Deployment
+- [ ] Changes committed with a descriptive message
+- [ ] Pushed to `origin main` (use SSH remote, not HTTPS, to include workflow changes)
+- [ ] GitHub Actions deploy workflow ran successfully (check Actions tab)
+- [ ] If deploy files changed (`deploy/`, `.github/workflows/`): verify the workflow ran and passed
+
+### Loose Ends
+- [ ] No stale counts in docs (e.g., test count in CLAUDE.md matches actual)
+- [ ] If a new dependency was added: `pyproject.toml` updated, `uv.lock` committed
+- [ ] If cron or VM config changed: `deploy/setup_vm.sh` updated and re-run on VM
+
+### Tech Backlog
+Track known improvements or deferred work here. Remove items as they're completed.
+
+- (none currently)
