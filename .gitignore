@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# uv
+.python-version
+
+# Scraper outputs
+reviews.db
+scraper.log
+cron.log
+*.csv
+
+# Pytest
+.pytest_cache/
