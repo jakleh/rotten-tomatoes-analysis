@@ -1,0 +1,19 @@
+# Ops Agent config — ships scraper logs to Cloud Logging.
+# Installed to /etc/google-cloud-ops-agent/config.yaml by setup_vm.sh.
+
+logging:
+  receivers:
+    scraper_log:
+      type: files
+      include_paths:
+        - /home/jakelehner/rotten-tomatoes-analysis/scraper.log
+    cron_log:
+      type: files
+      include_paths:
+        - /home/jakelehner/rotten-tomatoes-analysis/cron.log
+  service:
+    pipelines:
+      rt_scraper:
+        receivers:
+          - scraper_log
+          - cron_log

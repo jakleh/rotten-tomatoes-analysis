@@ -12,9 +12,10 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ├── tests/
 │   └── test_rotten_tomatoes.py # 64 tests (all pure logic, no network/browser)
 ├── deploy/
-│   ├── setup_vm.sh            # GCP VM setup script (installs deps, configures cron)
+│   ├── setup_vm.sh            # GCP VM setup script (installs deps, cron, Ops Agent)
 │   ├── backup_db.sh           # Daily GCS backup of reviews.db
-│   └── cleanup_csv.sh         # Daily cleanup of reference CSVs older than 30 days
+│   ├── cleanup_csv.sh         # Daily cleanup of reference CSVs older than 30 days
+│   └── ops-agent-config.yaml  # Ops Agent config (ships logs to Cloud Logging)
 ├── pyproject.toml             # Dependencies (uv managed, Python >=3.14)
 ├── .gitignore
 ├── README.MD                  # Original architecture spec
@@ -53,11 +54,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **CLI** — `--window hour|day|both` and `--movie <slug>` (override) via argparse
 - **GCS backups** — `deploy/backup_db.sh` copies `reviews.db` to `gs://rotten-tomatoes-scraper-backups/reviews-YYYY-MM-DD.db` daily at 3 AM via cron. Uses VM's default service account (needs `Storage Object Admin` role on the bucket, `cloud-platform` scope on the VM).
 - **CSV cleanup** — `deploy/cleanup_csv.sh` deletes `*_reference.csv` files older than 30 days. Runs daily at 4 AM via cron.
-- **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
+- **Email notifications** — Google Cloud Ops Agent ships `scraper.log` and `cron.log` to Cloud Logging. Cloud Monitoring alert policy emails on ERROR-level entries (pre-check failures, Selenium errors, backup failures).
+- **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, Ops Agent, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
 - **64 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, single-table migration, movie config loading. All use in-memory SQLite and mocks.
-
-### Not Yet Implemented (Planned Next)
-- **Email notifications** — Alert when scraper stops working (e.g., repeated pre-check failures, Selenium errors).
 
 ## Database Schema
 

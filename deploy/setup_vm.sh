@@ -1,6 +1,6 @@
 #!/bin/bash
 # setup_vm.sh — Run once on a fresh GCP e2-micro VM (Debian 12) to install
-# all dependencies and configure cron for both sliding windows.
+# all dependencies, configure cron, and set up log shipping to Cloud Logging.
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ echo "Project dir: $PROJECT_DIR"
 
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo ""
-echo "[1/4] Installing system packages (chromium, git)..."
+echo "[1/5] Installing system packages (chromium, git)..."
 sudo apt-get update -qq
 sudo apt-get install -y chromium git
 
@@ -22,7 +22,7 @@ echo "      Chromium found at: $CHROME_BIN"
 
 # ── 2. uv ─────────────────────────────────────────────────────────────────────
 echo ""
-echo "[2/4] Installing uv..."
+echo "[2/5] Installing uv..."
 if command -v uv &>/dev/null; then
     echo "      uv already installed, skipping."
 else
@@ -34,13 +34,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # ── 3. Python dependencies ────────────────────────────────────────────────────
 echo ""
-echo "[3/4] Installing Python dependencies via uv..."
+echo "[3/5] Installing Python dependencies via uv..."
 cd "$PROJECT_DIR"
 uv sync
 
 # ── 4. Cron jobs ──────────────────────────────────────────────────────────────
 echo ""
-echo "[4/4] Installing cron jobs..."
+echo "[4/5] Installing cron jobs..."
 
 # Remove the entire RT scraper block (everything between markers), then add fresh.
 (crontab -l 2>/dev/null | sed '/^# Rotten Tomatoes scraper/,/^$/d' | sed '/^CHROME_BIN=/d' || true) | crontab -
@@ -56,6 +56,23 @@ CHROME_BIN=$CHROME_BIN
 # End Rotten Tomatoes scraper
 EOF
 ) | crontab -
+
+# ── 5. Ops Agent (log shipping to Cloud Logging) ────────────────────────────
+echo ""
+echo "[5/5] Configuring Ops Agent for Cloud Logging..."
+
+if ! systemctl is-active --quiet google-cloud-ops-agent; then
+    echo "      Installing Ops Agent..."
+    curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
+    sudo bash add-google-cloud-ops-agent-repo.sh --also-install
+    rm -f add-google-cloud-ops-agent-repo.sh
+else
+    echo "      Ops Agent already running."
+fi
+
+sudo cp "$PROJECT_DIR/deploy/ops-agent-config.yaml" /etc/google-cloud-ops-agent/config.yaml
+sudo systemctl restart google-cloud-ops-agent
+echo "      Ops Agent configured and restarted."
 
 echo ""
 echo "=== Setup complete! ==="
