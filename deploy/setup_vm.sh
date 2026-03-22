@@ -43,7 +43,7 @@ echo ""
 echo "[4/4] Installing cron jobs..."
 
 # Remove any existing RT scraper cron entries, then add fresh ones.
-(crontab -l 2>/dev/null | grep -v "rotten_tomatoes.py" || true) | crontab -
+(crontab -l 2>/dev/null | grep -v "rotten_tomatoes.py" | grep -v "backup_db.sh" || true) | crontab -
 
 (crontab -l 2>/dev/null; cat <<EOF
 
@@ -51,6 +51,7 @@ echo "[4/4] Installing cron jobs..."
 CHROME_BIN=$CHROME_BIN
 */5 * * * * cd $PROJECT_DIR && $UV run python rotten_tomatoes.py --window hour >> $CRON_LOG 2>&1
 0 */6 * * * cd $PROJECT_DIR && $UV run python rotten_tomatoes.py --window day  >> $CRON_LOG 2>&1
+0 3 * * * $PROJECT_DIR/deploy/backup_db.sh >> $CRON_LOG 2>&1
 EOF
 ) | crontab -
 
@@ -62,6 +63,7 @@ crontab -l | grep -A3 "Rotten Tomatoes"
 echo ""
 echo "The hour window will run every 5 minutes."
 echo "The day window will run every 6 hours."
+echo "DB backup runs daily at 3:00 AM."
 echo "Logs → $CRON_LOG"
 echo ""
 echo "To test immediately, run:"
