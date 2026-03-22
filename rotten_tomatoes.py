@@ -9,6 +9,7 @@ Architecture:
 
 import csv
 import hashlib
+import json
 import logging
 import os
 import re
@@ -59,6 +60,43 @@ PRECHECK_HEADERS = {
                   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 }
 PRECHECK_FAILURE_ERROR_THRESHOLD = 10  # log ERROR after this many consecutive failures
+
+MOVIES_CONFIG_PATH = "movies.json"
+
+
+# ── Config ───────────────────────────────────────────────────────────────────
+
+def load_movie_config() -> list[str]:
+    """
+    Load enabled movie slugs from movies.json.
+
+    Returns a list of slug strings. Logs a warning and returns an empty list
+    if the file is missing or malformed.
+    """
+    config_path = Path(MOVIES_CONFIG_PATH)
+    if not config_path.exists():
+        log.warning("Config file not found: %s", MOVIES_CONFIG_PATH)
+        return []
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        log.error("Failed to read %s: %s", MOVIES_CONFIG_PATH, e)
+        return []
+
+    if not isinstance(data, list):
+        log.error("Expected a JSON array in %s", MOVIES_CONFIG_PATH)
+        return []
+
+    slugs = []
+    for entry in data:
+        if not isinstance(entry, dict) or "slug" not in entry:
+            log.warning("Skipping invalid entry in %s: %r", MOVIES_CONFIG_PATH, entry)
+            continue
+        if entry.get("enabled", True):
+            slugs.append(entry["slug"])
+
+    return slugs
 
 
 # ── Timestamp utilities ───────────────────────────────────────────────────────
@@ -755,12 +793,21 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--movie",
-        default="project_hail_mary",
-        help="RT movie slug to scrape (default: project_hail_mary)",
+        default=None,
+        help="Override: scrape only this movie slug (ignores movies.json)",
     )
     args = parser.parse_args()
 
-    if args.window in ("hour", "both"):
-        scrape_hour_sliding_window(args.movie)
-    if args.window in ("day", "both"):
-        scrape_day_sliding_window(args.movie)
+    if args.movie:
+        movie_slugs = [args.movie]
+    else:
+        movie_slugs = load_movie_config()
+        if not movie_slugs:
+            log.error("No movies to scrape. Check %s or use --movie.", MOVIES_CONFIG_PATH)
+            raise SystemExit(1)
+
+    for slug in movie_slugs:
+        if args.window in ("hour", "both"):
+            scrape_hour_sliding_window(slug)
+        if args.window in ("day", "both"):
+            scrape_day_sliding_window(slug)

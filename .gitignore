@@ -14,3 +14,4 @@ cron.log
 
 # Pytest
 .pytest_cache/
+tests/__init__.py

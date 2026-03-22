@@ -24,6 +24,7 @@ from rotten_tomatoes import (
     insert_review,
     interpolate_timestamps,
     is_at_or_older_than,
+    load_movie_config,
     migrate_to_single_table,
     reconcile_missing_reviews,
     record_precheck_failure,
@@ -490,3 +491,47 @@ class TestMigrateToSingleTable:
         tables = [r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         assert "reviews" in tables
         assert "precheck_state" in tables
+
+
+# ── load_movie_config ────────────────────────────────────────────────────────
+
+class TestLoadMovieConfig:
+    def test_loads_enabled_movies(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text('[{"slug": "movie_a", "enabled": true}, {"slug": "movie_b", "enabled": true}]')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            assert load_movie_config() == ["movie_a", "movie_b"]
+
+    def test_skips_disabled_movies(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text('[{"slug": "movie_a", "enabled": true}, {"slug": "movie_b", "enabled": false}]')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            assert load_movie_config() == ["movie_a"]
+
+    def test_enabled_defaults_to_true(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text('[{"slug": "movie_a"}]')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            assert load_movie_config() == ["movie_a"]
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(tmp_path / "nope.json")):
+            assert load_movie_config() == []
+
+    def test_invalid_json_returns_empty(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text("not json!!!")
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            assert load_movie_config() == []
+
+    def test_skips_entries_without_slug(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text('[{"slug": "movie_a"}, {"enabled": true}]')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            assert load_movie_config() == ["movie_a"]
+
+    def test_non_array_returns_empty(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text('{"slug": "movie_a"}')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            assert load_movie_config() == []

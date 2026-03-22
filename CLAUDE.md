@@ -8,8 +8,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 
 ```
 ├── rotten_tomatoes.py          # Main scraper (scraping, DB, reconciliation, pre-check)
+├── movies.json                # Movie config: list of {slug, enabled} objects
 ├── tests/
-│   └── test_rotten_tomatoes.py # 57 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 64 tests (all pure logic, no network/browser)
 ├── deploy/
 │   └── setup_vm.sh            # GCP VM setup script (installs deps, configures cron)
 ├── pyproject.toml             # Dependencies (uv managed, Python >=3.14)
@@ -46,12 +47,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Reconciliation** — `reconcile_missing_reviews()` groups consecutive missing reviews, interpolates timestamps from DB anchor neighbors. Only reconciles reviews with at least one DB anchor (no false reconciliation on first run/empty DB).
 - **Deduplication** — MD5 hash of `(reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via SQLite UNIQUE constraint.
 - **Logging** — to `scraper.log` (FileHandler) + console (StreamHandler)
-- **CLI** — `--window hour|day|both` and `--movie <slug>` via argparse
+- **Multi-movie config** — `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides the config for one-off runs.
+- **CLI** — `--window hour|day|both` and `--movie <slug>` (override) via argparse
 - **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, sets up cron. VM has 2GB swap file (needed for e2-micro's 1GB RAM).
-- **57 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, single-table migration. All use in-memory SQLite and mocks.
+- **64 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, single-table migration, movie config loading. All use in-memory SQLite and mocks.
 
 ### Not Yet Implemented (Planned Next)
-- **Multi-movie config** — Replace hardcoded `project_hail_mary` with a `movies.json` config file read by cron. Support scraping multiple movies per run.
 - **GCS backups** — Daily cron to copy `reviews.db` to Google Cloud Storage (5GB free tier).
 - **CSV cleanup** — Cron to delete reference CSVs older than N days.
 - **Email notifications** — Alert when scraper stops working (e.g., repeated pre-check failures, Selenium errors).
@@ -107,10 +108,13 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ## How to Run
 
 ```bash
-# Run both windows locally
+# Run both windows for all movies in movies.json
 uv run python rotten_tomatoes.py
 
-# Run specific window
+# Run specific window for all movies
+uv run python rotten_tomatoes.py --window hour
+
+# Override config: scrape a single movie
 uv run python rotten_tomatoes.py --window hour --movie project_hail_mary
 
 # Run tests
@@ -130,6 +134,7 @@ uv run --group dev pytest tests/ -v
 - **Logs**: `cron.log` (cron stdout/stderr), `scraper.log` (Python logging)
 - **SSH**: `gcloud compute ssh rt-scraper --zone=us-east1-b`
 - **Deploy code**: `gcloud compute scp ~/Desktop/rotten-tomatoes-analysis/rotten_tomatoes.py rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
+- **Deploy config**: `gcloud compute scp ~/Desktop/rotten-tomatoes-analysis/movies.json rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
 
 ## Dependencies
 
