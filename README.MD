@@ -1,6 +1,6 @@
-# Rotten Tomatoes Review Scraper
+# Rotten Tomatoes Review Scraper & Analytics Dashboard
 
-A web scraper that builds a time-series database of Rotten Tomatoes movie reviews. The system scrapes reviews at regular intervals using a sliding window architecture to capture new reviews as they appear and reconcile any that arrive late.
+A web scraper that builds a time-series database of Rotten Tomatoes movie reviews, plus an analytics dashboard for viewing and analyzing that data. The scraper runs on a GCP VM via cron, and the dashboard runs on the same VM as a systemd service.
 
 ## How It Works
 
@@ -56,16 +56,40 @@ Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name 
 | `consecutive_failures` | INTEGER | Consecutive pre-check failures |
 | `last_checked` | TEXT | UTC datetime of last check |
 
+## Analytics Dashboard
+
+A web dashboard for browsing and analyzing scraped review data. Built with FastAPI, Jinja2, HTMX, and Plotly.js.
+
+**Features:**
+- Paginated review table with movie filtering
+- Analytics charts: Tomatometer over time, review volume, sentiment breakdown, top critic comparison, cumulative reviews, score distribution
+- Stats panel: current Tomatometer %, total reviews, positive/negative counts, top critic score, average reviews per day
+
+**Access** (via SSH tunnel — dashboard binds to `127.0.0.1:8000`):
+```bash
+ssh -L 8000:127.0.0.1:8000 jakelehner@<vm-ip>
+# Then open http://localhost:8000
+```
+
+**Local development:**
+```bash
+cd web && uv run uvicorn app.main:app --reload
+```
+
 ## Setup
 
 **Requirements:** Python 3.14+, [uv](https://docs.astral.sh/uv/), Chromium/Chrome
 
 ```bash
-# Install dependencies
+# Install scraper dependencies
 uv sync
 
+# Install dashboard dependencies
+cd web && uv sync
+
 # Install dev dependencies (for testing)
-uv sync --group dev
+uv sync --group dev          # scraper
+cd web && uv sync --group dev  # dashboard
 ```
 
 ## Configuration
@@ -97,23 +121,28 @@ uv run python rotten_tomatoes.py --window hour --movie project_hail_mary
 ## Testing
 
 ```bash
+# Scraper tests
 uv run --group dev pytest tests/ -v
+
+# Dashboard tests
+cd web && uv run --group dev pytest tests/ -v
 ```
 
 All tests use in-memory SQLite and mocks — no network or browser required.
 
 ## Deployment
 
-The scraper runs on a GCP e2-micro VM (free tier, Debian 12) with cron scheduling. Code is auto-deployed via GitHub Actions on push to `main`.
+The scraper and dashboard run on a GCP e2-micro VM (free tier, Debian 12). The scraper runs via cron, and the dashboard runs as a systemd service (`rt-dashboard`). Both are auto-deployed via GitHub Actions on push to `main`.
 
 ### CI/CD
 
 Pushing to `main` triggers `.github/workflows/deploy.yml`, which:
 1. Authenticates with GCP via Workload Identity Federation (no stored keys)
-2. SCPs `rotten_tomatoes.py` and `movies.json` to the VM
-3. Runs `uv sync` on the VM to update dependencies
+2. SCPs scraper files and the `web/` directory to the VM
+3. Runs `uv sync` for both scraper and dashboard dependencies
+4. Restarts the `rt-dashboard` systemd service
 
-The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.json`, `pyproject.toml`, `deploy/**`, `.github/workflows/**`. It can also be triggered manually from the Actions tab.
+The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.json`, `pyproject.toml`, `deploy/**`, `web/**`, `.github/workflows/**`. It can also be triggered manually from the Actions tab.
 
 ### Cron Schedule
 
@@ -134,13 +163,13 @@ gcloud compute ssh rt-scraper --zone=us-east1-b
 gcloud compute scp rotten_tomatoes.py movies.json \
   jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
 
-# Full VM setup (installs deps, Chrome, cron, Ops Agent)
+# Full VM setup (installs deps, Chrome, cron, Ops Agent, dashboard service)
 # Run deploy/setup_vm.sh on the VM
 ```
 
 ### Monitoring
 
-- **Logs**: `scraper.log` (Python logging) and `cron.log` (cron stdout/stderr) are shipped to Cloud Logging via the Google Cloud Ops Agent
+- **Logs**: `scraper.log` (Python logging), `cron.log` (cron stdout/stderr), and `dashboard.log` (uvicorn output) are shipped to Cloud Logging via the Google Cloud Ops Agent
 - **Alerts**: Cloud Monitoring emails on ERROR-level log entries (pre-check failures, Selenium errors, backup failures)
 - **Backups**: Daily SQLite snapshots to `gs://rotten-tomatoes-scraper-backups/`
 
@@ -150,15 +179,21 @@ gcloud compute scp rotten_tomatoes.py movies.json \
 ├── rotten_tomatoes.py           # Main scraper
 ├── movies.json                  # Movie config: [{slug, enabled}]
 ├── tests/
-│   └── test_rotten_tomatoes.py  # Tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # Scraper tests (pure logic, no network/browser)
 ├── deploy/
 │   ├── setup_vm.sh              # GCP VM provisioning script
 │   ├── backup_db.sh             # Daily GCS backup
 │   ├── cleanup_csv.sh           # Daily reference CSV cleanup
 │   └── ops-agent-config.yaml    # Cloud Logging agent config
+├── web/                         # Analytics dashboard (FastAPI + HTMX + Plotly.js)
+│   ├── pyproject.toml           # Dashboard dependencies
+│   ├── app/                     # FastAPI app (routers, services, math, templates)
+│   ├── tests/                   # Dashboard tests
+│   └── deploy/
+│       └── rt-dashboard.service # systemd unit for dashboard
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml           # GitHub Actions: auto-deploy on push to main
-├── pyproject.toml               # Dependencies (uv managed)
+├── pyproject.toml               # Scraper dependencies (uv managed)
 └── uv.lock                      # Lockfile
 ```
