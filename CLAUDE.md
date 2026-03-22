@@ -45,7 +45,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **`get_reviews(movie_slug, critic_filter, stop_at_unit)`** — Selenium scraper with early stopping. `stop_at_unit='h'` for hour window, `'d'` for day window. Returns list of review dicts.
 - **`scrape_hour_sliding_window(movie_slug)`** — Runs every 5 min via cron. Pre-checks review count via HTTP first; only launches Selenium if count changed.
 - **`scrape_day_sliding_window(movie_slug)`** — Runs every 6 hours via cron. Always does full scrape. Reconciles lagging reviews, exports reference CSV, calibrates pre-check state.
-- **SQLite layer** — `init_reviews_table` (single unified table with `movie_slug` column), `insert_review` (dedup via MD5 unique_review_id), `get_db_review_ids`, `get_db_reviews_sorted`, `export_reference_csv`, `migrate_to_single_table` (auto-migrates legacy per-movie tables on startup)
+- **SQLite layer** — `init_reviews_table` (single unified table with `movie_slug` column), `insert_review` (dedup via MD5 unique_review_id), `get_db_review_ids`, `get_db_reviews_sorted`, `export_reference_csv`
 - **Pre-check system** — `fetch_review_count()` hits main movie page (`/m/{slug}`) with `requests`, extracts count via regex `(\d+) Reviews`. `has_new_reviews()` compares against stored count in `precheck_state` table. Tracks consecutive failures; logs WARNING each time, ERROR after 10+. Falls back to full Selenium scrape on failure.
 - **Reconciliation** — `reconcile_missing_reviews()` groups consecutive missing reviews, interpolates timestamps from DB anchor neighbors. Only reconciles reviews with at least one DB anchor (no false reconciliation on first run/empty DB).
 - **Deduplication** — MD5 hash of `(reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via SQLite UNIQUE constraint.
@@ -56,7 +56,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **CSV cleanup** — `deploy/cleanup_csv.sh` deletes `*_reference.csv` files older than 30 days. Runs daily at 4 AM via cron.
 - **Email notifications** — Google Cloud Ops Agent ships `scraper.log` and `cron.log` to Cloud Logging. Cloud Monitoring alert policy emails on ERROR-level entries (pre-check failures, Selenium errors, backup failures).
 - **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, Ops Agent, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
-- **64 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, single-table migration, movie config loading. All use in-memory SQLite and mocks.
+- **60 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading. All use in-memory SQLite and mocks.
 
 ## Database Schema
 

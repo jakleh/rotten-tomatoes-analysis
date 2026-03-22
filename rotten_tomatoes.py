@@ -201,46 +201,6 @@ def init_precheck_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def migrate_to_single_table(conn: sqlite3.Connection) -> None:
-    """
-    Migrate old per-movie tables into the unified `reviews` table.
-
-    Detects any table that isn't a known system table, copies its rows into
-    `reviews` with the table name as the movie_slug, then drops the old table.
-    """
-    SYSTEM_TABLES = {"reviews", "precheck_state"}
-    rows = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    ).fetchall()
-    old_tables = [r["name"] for r in rows if r["name"] not in SYSTEM_TABLES]
-
-    if not old_tables:
-        return
-
-    for table in old_tables:
-        # Derive movie_slug from table name (underscores back to underscores — the
-        # original _table_name() replaced hyphens with underscores, so the table name
-        # IS the slug as stored).
-        movie_slug = table
-        count = conn.execute(f"SELECT COUNT(*) AS cnt FROM [{table}]").fetchone()["cnt"]
-        if count == 0:
-            conn.execute(f"DROP TABLE [{table}]")
-            log.info("Dropped empty legacy table: %s", table)
-            continue
-
-        conn.execute(f"""
-            INSERT OR IGNORE INTO reviews
-                (movie_slug, timestamp, unique_review_id, subjective_score,
-                 reconciled_timestamp, reviewer_name, publication_name, top_critic)
-            SELECT ?, timestamp, unique_review_id, subjective_score,
-                   reconciled_timestamp, reviewer_name, publication_name, top_critic
-            FROM [{table}]
-        """, (movie_slug,))
-        conn.execute(f"DROP TABLE [{table}]")
-        conn.commit()
-        log.info("Migrated %d rows from legacy table '%s' → reviews.", count, table)
-
-
 def get_last_review_count(conn: sqlite3.Connection, movie_slug: str) -> int:
     """Return the last known review count for a movie, or 0 if unknown."""
     row = conn.execute(
@@ -712,7 +672,6 @@ def scrape_hour_sliding_window(movie_slug: str, minute_increment: int = 5) -> No
     try:
         init_reviews_table(conn)
         init_precheck_table(conn)
-        migrate_to_single_table(conn)
 
         if not has_new_reviews(conn, movie_slug):
             log.info("Hour window complete. Skipped Selenium (no new reviews).")
@@ -747,7 +706,6 @@ def scrape_day_sliding_window(movie_slug: str, hour_increment: int = 6) -> None:
     try:
         init_reviews_table(conn)
         init_precheck_table(conn)
-        migrate_to_single_table(conn)
         for critic_filter in CRITIC_FILTERS:
             reviews = get_reviews(movie_slug, critic_filter, stop_at_unit="d")
 

@@ -25,7 +25,6 @@ from rotten_tomatoes import (
     interpolate_timestamps,
     is_at_or_older_than,
     load_movie_config,
-    migrate_to_single_table,
     reconcile_missing_reviews,
     record_precheck_failure,
     update_last_review_count,
@@ -415,82 +414,6 @@ class TestHasNewReviews:
         update_last_review_count(conn, self.SLUG, 100)
         with patch("rotten_tomatoes.fetch_review_count", return_value=98):
             assert has_new_reviews(conn, self.SLUG) is True
-
-
-# ── migrate_to_single_table ─────────────────────────────────────────────────
-
-class TestMigrateToSingleTable:
-    def test_migrates_legacy_table(self):
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        # Create a legacy per-movie table
-        conn.execute("""
-            CREATE TABLE project_hail_mary (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                unique_review_id TEXT UNIQUE NOT NULL,
-                subjective_score TEXT,
-                reconciled_timestamp INTEGER NOT NULL DEFAULT 0,
-                reviewer_name TEXT,
-                publication_name TEXT,
-                top_critic INTEGER NOT NULL DEFAULT 0
-            )
-        """)
-        conn.execute(
-            "INSERT INTO project_hail_mary (timestamp, unique_review_id, reviewer_name, publication_name) VALUES (?, ?, ?, ?)",
-            ("2026-03-21 10:00:00", "abc123", "Alice", "AV Club"),
-        )
-        conn.commit()
-
-        # Create the new reviews table, then migrate
-        init_reviews_table(conn)
-        migrate_to_single_table(conn)
-
-        # Legacy table should be gone
-        tables = [r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        assert "project_hail_mary" not in tables
-
-        # Row should be in the reviews table with correct movie_slug
-        rows = conn.execute("SELECT * FROM reviews WHERE movie_slug = 'project_hail_mary'").fetchall()
-        assert len(rows) == 1
-        assert rows[0]["reviewer_name"] == "Alice"
-        assert rows[0]["unique_review_id"] == "abc123"
-
-    def test_skips_when_no_legacy_tables(self):
-        conn = make_conn()
-        # Should not raise
-        migrate_to_single_table(conn)
-
-    def test_drops_empty_legacy_table(self):
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        conn.execute("""
-            CREATE TABLE some_movie (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                unique_review_id TEXT UNIQUE NOT NULL,
-                subjective_score TEXT,
-                reconciled_timestamp INTEGER NOT NULL DEFAULT 0,
-                reviewer_name TEXT,
-                publication_name TEXT,
-                top_critic INTEGER NOT NULL DEFAULT 0
-            )
-        """)
-        conn.commit()
-        init_reviews_table(conn)
-        migrate_to_single_table(conn)
-
-        tables = [r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        assert "some_movie" not in tables
-
-    def test_ignores_system_tables(self):
-        conn = make_conn()
-        init_precheck_table(conn)
-        # Should not try to migrate precheck_state or reviews
-        migrate_to_single_table(conn)
-        tables = [r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        assert "reviews" in tables
-        assert "precheck_state" in tables
 
 
 # ── load_movie_config ────────────────────────────────────────────────────────
