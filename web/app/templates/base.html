@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}RT Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-brand">RT Dashboard</div>
+        <div class="nav-links">
+            <a href="/reviews" class="nav-link {% block nav_reviews %}{% endblock %}">Reviews</a>
+            <a href="/analytics" class="nav-link {% block nav_analytics %}{% endblock %}">Analytics</a>
+            <a href="/reports" class="nav-link {% block nav_reports %}{% endblock %}">Reports</a>
+        </div>
+    </nav>
+    <main class="content">
+        {% block content %}{% endblock %}
+    </main>
+    <script src="/static/app.js"></script>
+</body>
+</html>

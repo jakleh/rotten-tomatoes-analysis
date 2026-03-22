@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Rotten Tomatoes web scraper that builds a time-series database of movie reviews. The system scrapes reviews at regular intervals using a sliding window architecture to capture new reviews as they appear and reconcile any that arrive late.
+Rotten Tomatoes web scraper that builds a time-series database of movie reviews, plus a web dashboard for viewing and analyzing that data. The scraper runs on a GCP VM via cron, and the dashboard reads the same SQLite DB as a separate service.
 
 ## File Structure
 
@@ -16,10 +16,42 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 │   ├── backup_db.sh           # Daily GCS backup of reviews.db
 │   ├── cleanup_csv.sh         # Daily cleanup of reference CSVs older than 30 days
 │   └── ops-agent-config.yaml  # Ops Agent config (ships logs to Cloud Logging)
+├── web/                       # Analytics dashboard (FastAPI + Jinja2 + HTMX)
+│   ├── pyproject.toml         # Separate deps (fastapi, uvicorn, jinja2, plotly, fpdf2)
+│   ├── app/
+│   │   ├── main.py            # FastAPI app factory
+│   │   ├── config.py          # Settings: DB_PATH, HOST, PORT, MOVIES_JSON_PATH
+│   │   ├── db.py              # Read-only SQLite connection dependency
+│   │   ├── cache.py           # In-memory TTL cache (60s, keyed by func+movie+params)
+│   │   ├── templating.py      # Shared Jinja2 templates instance
+│   │   ├── routers/
+│   │   │   ├── reviews.py     # /reviews endpoints (full page + HTMX table partial)
+│   │   │   └── analytics.py   # /analytics endpoints (full page + chart/calc partials)
+│   │   ├── services/
+│   │   │   ├── review_service.py    # Paginated review queries
+│   │   │   └── analytics_service.py # Math + DB + Plotly JSON orchestration + caching
+│   │   ├── math/
+│   │   │   ├── sentiment.py   # Tomatometer over time, sentiment counts, current score
+│   │   │   ├── timing.py      # Reviews per bucket, cumulative count, avg per day
+│   │   │   ├── critics.py     # Top critic vs regular split, publication counts
+│   │   │   └── scoring.py     # Score distribution histogram
+│   │   ├── templates/
+│   │   │   ├── base.html      # Shared layout (nav, HTMX/Plotly CDN)
+│   │   │   ├── reviews.html   # Reviews page
+│   │   │   ├── analytics.html # Analytics page (sidebar + chart area)
+│   │   │   └── partials/
+│   │   │       ├── review_table.html   # HTMX partial: review table + pagination
+│   │   │       ├── chart.html          # HTMX partial: Plotly chart
+│   │   │       └── calculation.html    # HTMX partial: stats panel
+│   │   └── static/
+│   │       ├── style.css      # Full styling (nav, table, analytics, stats grid)
+│   │       └── app.js         # Minimal JS (Plotly resize hook)
+│   ├── tests/                 # 72 tests (review service, cache, math, analytics)
+│   └── deploy/                # systemd unit, setup script, tunnel helper
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml         # GitHub Actions: auto-deploy to GCP VM on push to main
-├── pyproject.toml             # Dependencies (uv managed, Python >=3.14)
+├── pyproject.toml             # Scraper dependencies (uv managed, Python >=3.14)
 ├── .gitignore
 ├── README.MD                  # Project documentation
 └── .claude/                   # Claude Code config
@@ -30,18 +62,24 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Language**: Python 3.14
 - **Package manager**: uv
 - **Scraping**: Selenium WebDriver (headless Chrome) + BeautifulSoup4
-- **Database**: SQLite (`reviews.db`)
+- **Database**: SQLite (`reviews.db`) with WAL mode for concurrent read/write
 - **Pre-check**: `requests` library (lightweight HTTP to skip unnecessary Selenium runs)
-- **Deployment**: GCP e2-micro VM (free tier, Debian 12) + cron
+- **Dashboard**: FastAPI + Jinja2 + HTMX + Plotly.js (read-only against DB)
+- **Deployment**: GCP e2-micro VM (free tier, Debian 12) + cron (scraper) + systemd (dashboard)
 - **CI/CD**: GitHub Actions (auto-deploy on push to main via Workload Identity Federation)
 
 ## Resolved Design Decisions
 
-- **Database**: SQLite (local file `reviews.db`)
+- **Database**: SQLite (local file `reviews.db`) with WAL mode (set in `init_reviews_table`)
 - **Deployment**: GCP e2-micro VM (`rt-scraper`, zone `us-east1-b`) with cron
 - **Scraping method**: Selenium (RT's `/napi/` endpoint returns 404; verified via curl)
 - **Interpolation**: Even distribution between known timestamps, all marked `reconciled_timestamp=True`
 - **Top critic detection**: Filter-based — scrape `top-critics` first (all are top critics), then `all-critics`. Isolated in one line, easy to change later.
+- **Dashboard frontend**: Jinja2 + HTMX + Plotly.js (no JS build pipeline, all-Python stack)
+- **Dashboard hosting**: Same e2-micro VM, separate systemd service, binds to `127.0.0.1:8000` (SSH tunnel for access)
+- **Dashboard DB access**: Read-only SQLite connections (`?mode=ro`), WAL mode allows concurrent reads during scraper writes
+- **PDF generation**: fpdf2 + matplotlib (lightweight, ~50MB peak vs ~350MB+ for WeasyPrint + kaleido)
+- **Dashboard repo structure**: Monorepo `web/` subdirectory with its own `pyproject.toml` — shares `movies.json` and DB file, separate CI/CD workflow
 
 ## Implementation Status
 
@@ -62,6 +100,34 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, Ops Agent, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
 - **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs `rotten_tomatoes.py` and `movies.json` as `jakelehner@rt-scraper`, then runs `uv sync` via SSH.
 - **62 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence. All use in-memory SQLite and mocks.
+
+### Dashboard (web/) — In Progress
+
+**Phase 1 complete (Foundation + Reviews Table):**
+- **FastAPI app** — `web/app/main.py` with Jinja2 templates, static file serving, HTMX partials
+- **Config** — `web/app/config.py` reads DB_PATH, HOST, PORT, MOVIES_JSON_PATH from env vars with defaults
+- **DB layer** — `web/app/db.py` provides read-only SQLite connections as FastAPI dependencies, loads movie slugs from `movies.json`
+- **Review service** — `web/app/services/review_service.py` with paginated queries (newest-first, movie filter, page size clamping)
+- **Reviews page** — Full page at `/reviews`, HTMX partial at `/reviews/table` for arrow-click pagination without scrolling
+- **Templates** — `base.html` (shared nav + HTMX/Plotly.js CDN), `reviews.html`, `partials/review_table.html`
+- **16 tests** — covering ReviewPage dataclass, paginated queries, movie filtering, edge cases
+
+**Phase 2 complete (Math Layer + Analytics Dashboard):**
+- **Cache** — `web/app/cache.py` in-memory TTL cache (60s default), keyed by `(func_name, movie, frozen_params)`. Functions: `cache_get`, `cache_set`, `cache_clear`, `make_key`.
+- **Math layer** — four pure-function modules in `web/app/math/`:
+  - `sentiment.py` — `sentiment_counts()`, `current_tomatometer()`, `tomatometer_over_time()`
+  - `timing.py` — `reviews_per_bucket(bucket="day"|"hour")`, `cumulative_reviews()`, `avg_reviews_per_day()`
+  - `critics.py` — `top_critic_split()`, `publication_counts(top_n=10)`
+  - `scoring.py` — `score_distribution()`
+- **Analytics service** — `web/app/services/analytics_service.py` orchestrates DB → math → Plotly JSON specs with caching. 6 chart types: `tomatometer_over_time`, `review_volume`, `sentiment_breakdown`, `top_critic_comparison`, `cumulative_reviews`, `score_distribution`. Stats panel: tomatometer %, total reviews, positive/negative counts, top critic score, avg reviews/day.
+- **Analytics router** — `web/app/routers/analytics.py` with `GET /analytics` (full page), `GET /analytics/chart` (HTMX chart partial), `GET /analytics/calc` (HTMX stats partial)
+- **Analytics templates** — `analytics.html` (sidebar with movie dropdown + chart type selector + stats panel, main area with Plotly chart), `partials/chart.html` (inline Plotly.newPlot script), `partials/calculation.html` (stat grid cards)
+- **HTMX interactions** — Movie dropdown triggers both chart and stats reload. Chart type dropdown triggers chart reload. Both use `hx-include` to pass sibling control values.
+- **56 new tests** (72 total) — covering cache (key building, get/set, expiry, clear), all four math modules (empty data, single review, mixed sentiment, edge cases), and analytics service (chart JSON validity for all 6 types, stats computation, movie filtering, caching)
+
+**Remaining phases:**
+- Phase 3: Deploy to VM as systemd service (validate memory budget before adding PDF)
+- Phase 4: Report page with document preview + fpdf2/matplotlib PDF generation (with `asyncio.Semaphore(1)` to serialize renders)
 
 ## Database Schema
 
@@ -105,6 +171,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 4. Export reference CSV
 5. Calibrate pre-check state with authoritative count
 
+### Dashboard Architecture
+- **Layering**: Router → Service → Math. Routers handle HTTP/HTMX, services orchestrate DB + math, math functions are pure (data in, result out).
+- **HTMX pattern**: User interaction → HTMX sends GET → FastAPI returns HTML fragment → HTMX swaps into page. Trigger strategies: `change` for dropdowns, `click` for buttons, `keyup changed delay:500ms` for text inputs.
+- **Concurrency**: Read-only SQLite + WAL mode. Fresh connection per request, closed after response.
+- **Caching**: In-memory dict with 60s TTL keyed by `(function, movie, params_frozen_tuple)`.
+
 ### Reconciliation Rules
 - Only reconciles reviews that have **at least one DB anchor neighbor** (proving the hour window was running during that time period)
 - No anchors = reviews are just unseen (first run / empty DB), not lagging → skip
@@ -115,6 +187,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ## How to Run
 
 ```bash
+# === Scraper ===
 # Run both windows for all movies in movies.json
 uv run python rotten_tomatoes.py
 
@@ -124,8 +197,15 @@ uv run python rotten_tomatoes.py --window hour
 # Override config: scrape a single movie
 uv run python rotten_tomatoes.py --window hour --movie project_hail_mary
 
-# Run tests
+# Run scraper tests
 uv run --group dev pytest tests/ -v
+
+# === Dashboard ===
+# Start dev server (from web/ directory)
+cd web && uv run uvicorn app.main:app --reload
+
+# Run dashboard tests
+cd web && uv run --group dev pytest tests/ -v
 ```
 
 ## GCP VM Details
@@ -150,9 +230,9 @@ uv run --group dev pytest tests/ -v
 
 ## Dependencies
 
-Managed via `pyproject.toml` + `uv.lock`:
-- beautifulsoup4, selenium, requests, pandas, matplotlib
-- Dev: pytest
+**Scraper** (`pyproject.toml`): beautifulsoup4, selenium, requests, pandas, matplotlib. Dev: pytest.
+
+**Dashboard** (`web/pyproject.toml`): fastapi, uvicorn, jinja2, plotly, fpdf2, matplotlib, python-multipart. Dev: pytest, httpx.
 
 ## Workflow: Milestone Checklist
 

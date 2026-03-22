@@ -1,0 +1,36 @@
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-value {% if stats.tomatometer is not none %}{% if stats.tomatometer >= 60 %}positive{% else %}negative{% endif %}{% endif %}">
+            {{ stats.tomatometer if stats.tomatometer is not none else "—" }}{% if stats.tomatometer is not none %}%{% endif %}
+        </div>
+        <div class="stat-label">Tomatometer</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.total_reviews }}</div>
+        <div class="stat-label">Total Reviews</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.positive }}</div>
+        <div class="stat-label">Positive</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.negative }}</div>
+        <div class="stat-label">Negative</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-value {% if stats.top_critic_pct is not none %}{% if stats.top_critic_pct >= 60 %}positive{% else %}negative{% endif %}{% endif %}">
+            {{ stats.top_critic_pct if stats.top_critic_pct is not none else "—" }}{% if stats.top_critic_pct is not none %}%{% endif %}
+        </div>
+        <div class="stat-label">Top Critic Score ({{ stats.top_critic_total }})</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.avg_per_day }}</div>
+        <div class="stat-label">Avg Reviews / Day</div>
+    </div>
+</div>
+<span id="calc-loading" class="htmx-indicator">Updating...</span>

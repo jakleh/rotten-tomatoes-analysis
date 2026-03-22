@@ -1,0 +1,70 @@
+<div class="table-wrapper">
+    <table class="review-table">
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Movie</th>
+                <th>Reviewer</th>
+                <th>Publication</th>
+                <th>Score</th>
+                <th>Sentiment</th>
+                <th>Top Critic</th>
+                <th>Reconciled</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for review in result.reviews %}
+            <tr>
+                <td>{{ review.timestamp }}</td>
+                <td>{{ review.movie_slug | replace("_", " ") | title }}</td>
+                <td>{{ review.reviewer_name or "—" }}</td>
+                <td>{{ review.publication_name or "—" }}</td>
+                <td>{{ review.subjective_score or "—" }}</td>
+                <td>
+                    {% if review.tomatometer_sentiment == "positive" %}
+                        <span class="badge positive">Positive</span>
+                    {% elif review.tomatometer_sentiment == "negative" %}
+                        <span class="badge negative">Negative</span>
+                    {% else %}
+                        <span class="badge neutral">—</span>
+                    {% endif %}
+                </td>
+                <td>{{ "Yes" if review.top_critic else "No" }}</td>
+                <td>{{ "Yes" if review.reconciled_timestamp else "No" }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" class="empty-state">No reviews found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="pagination">
+    <div class="pagination-info">
+        Showing {{ ((result.page - 1) * result.per_page) + 1 }}–{{ [result.page * result.per_page, result.total] | min }}
+        of {{ result.total }} reviews
+        &middot; Page {{ result.page }} of {{ result.total_pages }}
+    </div>
+    <div class="pagination-controls">
+        <button class="page-arrow {% if not result.has_prev %}disabled{% endif %}"
+                {% if result.has_prev %}
+                hx-get="/reviews/table?page={{ result.page - 1 }}&per_page={{ result.per_page }}&movie={{ selected_movie }}"
+                hx-target="#review-table-container"
+                {% else %}
+                disabled
+                {% endif %}>
+            &#9664; Prev
+        </button>
+        <button class="page-arrow {% if not result.has_next %}disabled{% endif %}"
+                {% if result.has_next %}
+                hx-get="/reviews/table?page={{ result.page + 1 }}&per_page={{ result.per_page }}&movie={{ selected_movie }}"
+                hx-target="#review-table-container"
+                {% else %}
+                disabled
+                {% endif %}>
+            Next &#9654;
+        </button>
+    </div>
+</div>

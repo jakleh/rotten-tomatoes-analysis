@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics — RT Dashboard{% endblock %}
+{% block nav_analytics %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Analytics</h1>
+</div>
+
+<div class="analytics-layout">
+    <aside class="sidebar">
+        <div class="control-group">
+            <label for="movie-filter">Movie</label>
+            <select id="movie-filter"
+                    name="movie"
+                    hx-get="/analytics/chart"
+                    hx-target="#chart-container"
+                    hx-include="#chart-type"
+                    hx-trigger="change"
+                    hx-indicator="#chart-loading">
+                <option value="all" {% if selected_movie == "all" %}selected{% endif %}>All Movies</option>
+                {% for slug in movies %}
+                <option value="{{ slug }}" {% if selected_movie == slug %}selected{% endif %}>
+                    {{ slug | replace("_", " ") | title }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="chart-type">Visualization</label>
+            <select id="chart-type"
+                    name="chart"
+                    hx-get="/analytics/chart"
+                    hx-target="#chart-container"
+                    hx-include="#movie-filter"
+                    hx-trigger="change"
+                    hx-indicator="#chart-loading">
+                {% for value, label in chart_types %}
+                <option value="{{ value }}" {% if selected_chart == value %}selected{% endif %}>
+                    {{ label }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="control-group">
+            <div class="stats-panel">
+                <div id="calc-container"
+                     hx-get="/analytics/calc"
+                     hx-include="#movie-filter"
+                     hx-trigger="change from:#movie-filter"
+                     hx-indicator="#calc-loading">
+                    {% include "partials/calculation.html" %}
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <div class="main-panel">
+        <div id="chart-container" class="chart-container">
+            {% include "partials/chart.html" %}
+        </div>
+    </div>
+</div>
+{% endblock %}

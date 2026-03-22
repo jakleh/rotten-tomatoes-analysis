@@ -171,6 +171,7 @@ def get_db_connection() -> sqlite3.Connection:
 
 def init_reviews_table(conn: sqlite3.Connection) -> None:
     """Create the unified reviews table if it doesn't already exist."""
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id                    INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,0 +1,9 @@
+<div id="plotly-chart" style="width:100%; min-height:400px;"></div>
+<span id="chart-loading" class="htmx-indicator">Loading chart...</span>
+<script>
+(function() {
+    var spec = {{ chart_json | safe }};
+    var config = {responsive: true, displayModeBar: false};
+    Plotly.newPlot("plotly-chart", spec.data, spec.layout, config);
+})();
+</script>
