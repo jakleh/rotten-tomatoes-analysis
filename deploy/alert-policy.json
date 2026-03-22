@@ -1,0 +1,25 @@
+{
+  "displayName": "RT Scraper Error Alert",
+  "documentation": {
+    "content": "ERROR-level log entry detected in the RT scraper on the rt-scraper VM. Check scraper.log and cron.log for details.",
+    "mimeType": "text/markdown"
+  },
+  "conditions": [
+    {
+      "displayName": "ERROR in scraper logs",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"gce_instance\" AND severity=\"ERROR\""
+      }
+    }
+  ],
+  "combiner": "OR",
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    },
+    "autoClose": "604800s"
+  },
+  "notificationChannels": [
+    "projects/rotten-tomatoes-scraper/notificationChannels/9293241065327781103"
+  ]
+}
