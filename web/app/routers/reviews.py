@@ -24,9 +24,9 @@ async def reviews_page(
     result = get_reviews_page(conn, page=page, per_page=per_page, movie=movie)
     movies = load_movie_slugs()
     return templates.TemplateResponse(
+        request,
         "reviews.html",
         {
-            "request": request,
             "result": result,
             "movies": movies,
             "selected_movie": movie,
@@ -45,9 +45,9 @@ async def reviews_table(
     """HTMX partial: just the table body + pagination controls."""
     result = get_reviews_page(conn, page=page, per_page=per_page, movie=movie)
     return templates.TemplateResponse(
+        request,
         "partials/review_table.html",
         {
-            "request": request,
             "result": result,
             "selected_movie": movie,
         },

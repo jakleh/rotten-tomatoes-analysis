@@ -24,9 +24,9 @@ async def analytics_page(
     chart_json = get_chart(conn, movie, chart)
     stats = get_stats(conn, movie)
     return templates.TemplateResponse(
+        request,
         "analytics.html",
         {
-            "request": request,
             "movies": movies,
             "selected_movie": movie,
             "selected_chart": chart,
@@ -47,9 +47,9 @@ async def analytics_chart(
     """HTMX partial: chart container."""
     chart_json = get_chart(conn, movie, chart)
     return templates.TemplateResponse(
+        request,
         "partials/chart.html",
         {
-            "request": request,
             "chart_json": chart_json,
         },
     )
@@ -64,9 +64,9 @@ async def analytics_calc(
     """HTMX partial: stats calculations panel."""
     stats = get_stats(conn, movie)
     return templates.TemplateResponse(
+        request,
         "partials/calculation.html",
         {
-            "request": request,
             "stats": stats,
         },
     )
