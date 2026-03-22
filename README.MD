@@ -1,55 +1,153 @@
-“Rotten Tomatoes” Web Scraper
+# Rotten Tomatoes Review Scraper
 
-Overview:
+A web scraper that builds a time-series database of Rotten Tomatoes movie reviews. The system scrapes reviews at regular intervals using a sliding window architecture to capture new reviews as they appear and reconcile any that arrive late.
 
-We want to build a database of Rotten Tomatoes reviews, where each table corresponds to a particular movie and each row is a distinct review. We will populate the database by scraping from the rotten tomatoes website. The current version of the web scraper is in this `brainstorm directory` and is called `rotten_tomatoes.py`. But, of course, it needs changes. There is also a markdown file in this brainstorm directory called `CONVERSATION_WITH_GEMINI.MD`, which contains an exchange between me and Gemini about similar architectural/implementation questions that I'll be seeking to answer in this current exchange.
+## How It Works
 
-***
+The scraper uses two complementary sliding windows to maintain a complete, ordered timeline of reviews:
 
-Architecture:
+### Hour Window (every 5 minutes)
 
-Function call: `scrape_hour_sliding_window(minute_increment)`:
-Every `minute_increment` minutes, we iterate through website reviews and scrape them, starting with the most recent one and until we encounter a review whose timestamp ends with “h” (since, as far as we can tell from the website, this represents the end of the sequence of reviews generated in the last hour).
-We store each of the scraped reviews as a row in a relational database. For each newly-scraped review, we query the database for that review. If the review is already in the database, we move on. If not, we add the review.
+1. **Pre-check** — lightweight HTTP request to the movie page, extracts the review count via regex
+2. If the count hasn't changed since last check, skip (no Selenium overhead)
+3. If count changed (or pre-check failed) — launch headless Chrome via Selenium
+4. Scrape only recent reviews (those with minute-level timestamps)
+5. Insert new reviews into the database, skip duplicates
 
-Function call: `scrape_day_sliding_window(hour_increment):`
-Every `hour_increment` hours, we perform the same process as in the previous function call, except this time we stop iterating/scraping once we encounter a review whose timestamp ends with “d.”
-Before we store these reviews in archival storage, we first count this batch of reviews and confirm that it matches the count in the relational database for all reviews collected before the current time.
-If the counts are equal, move on.
-If the counts are not equal:
-Step 1: Identify a review or group of consecutive reviews in the current batch of scraped reviews (i.e., the reviews that were just scraped by this `scrape_day_sliding_window` function call) that does not appear in the relational database but does appear in the reference file.
-Step 2: Insert it into the database directly after whichever review appears directly before that review (or review group) in both the reference file and in the database.
-(I wonder if we should spread out missing reviews as much as possible. Like, if we know some batch of two missing reviews came after a review at 3pm on March 20th and before a review at 4:30pm on the same day, then we mark the first missing review as 3:30pm on March 20th and the second as 4pm on March 20th.) Or, if it’s only one review, then it would be inserted at 3:45pm.
-Then we could indicate in the table that the timestamp was estimated in the `Reconciled_Timestamp` field by setting it to `True`
-We then store this current batch of scraped reviews as a .csv file in archival storage and name the file “<current timestamp>_reviews_reference”
+### Day Window (every 6 hours)
 
-***
+1. Full Selenium scrape of reviews from the past day
+2. **Reconcile** — detect reviews the hour window missed ("lagging" reviews)
+3. Interpolate timestamps for missed reviews between known anchor points
+4. Export a reference CSV snapshot
+5. Recalibrate the pre-check state with an authoritative count
 
-Databases/Storage
+### Reconciliation
 
-Table - Relational database with the following schema:
+Reviews that the hour window missed get their timestamps interpolated — evenly distributed between the nearest known reviews in the database. All interpolated reviews are flagged with `reconciled_timestamp = 1`. Reviews are never deleted; the system is insert-only.
 
-***
+### Deduplication
 
-Timestamp (datetime | should be eastern time)
+Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name + subjective_score)`, enforced by a SQLite UNIQUE constraint.
 
-Unique review ID (unique identifier that you create)
+## Database Schema
 
-Subjective score (str | typically denoted as something like “3/5” or “A-”
+### `reviews`
 
-`Reconciled_Timestamp` (boolean | indicates whether the review was missing from the hour sliding window detection (i.e., a timestamp whose exact minute is estimated--probably should figure out how we’re going to handle this before we decide on any architecture though)
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | Auto-increment primary key |
+| `movie_slug` | TEXT | Movie identifier (e.g., `project_hail_mary`) |
+| `timestamp` | TEXT | UTC datetime |
+| `unique_review_id` | TEXT (UNIQUE) | MD5 hash for deduplication |
+| `subjective_score` | TEXT | e.g., `3/5`, `A-` |
+| `reconciled_timestamp` | INTEGER | `1` if timestamp was interpolated |
+| `reviewer_name` | TEXT | |
+| `publication_name` | TEXT | |
+| `top_critic` | INTEGER | `1` if from top-critics filter |
 
-`Reviewer name` (str)
+### `precheck_state`
 
-`Publication name` (str)
+| Column | Type | Description |
+|---|---|---|
+| `movie_slug` | TEXT (PK) | Movie identifier |
+| `last_review_count` | INTEGER | Last known review count |
+| `consecutive_failures` | INTEGER | Consecutive pre-check failures |
+| `last_checked` | TEXT | UTC datetime of last check |
 
-`Top critic` (boolean)
+## Setup
 
-***
+**Requirements:** Python 3.14+, [uv](https://docs.astral.sh/uv/), Chromium/Chrome
 
+```bash
+# Install dependencies
+uv sync
 
-Archival
+# Install dev dependencies (for testing)
+uv sync --group dev
+```
 
-We want to store the reference files that we generate on each run, as well as an occasional snapshot of the relational database, in s3
-We’ll store the reference files and db snapshots in separate folders
-We’ll need a method of pruning reference files and only keeping a certain number to save space/money
+## Configuration
+
+Movies to track are defined in `movies.json`:
+
+```json
+[
+  {"slug": "project_hail_mary", "enabled": true}
+]
+```
+
+The `slug` corresponds to the Rotten Tomatoes URL path (e.g., `rottentomatoes.com/m/project_hail_mary`).
+
+## Usage
+
+```bash
+# Run both windows for all enabled movies
+uv run python rotten_tomatoes.py
+
+# Run a specific window
+uv run python rotten_tomatoes.py --window hour
+uv run python rotten_tomatoes.py --window day
+
+# Override config to scrape a single movie
+uv run python rotten_tomatoes.py --window hour --movie project_hail_mary
+```
+
+## Testing
+
+```bash
+uv run --group dev pytest tests/ -v
+```
+
+All tests use in-memory SQLite and mocks — no network or browser required.
+
+## Deployment
+
+The scraper runs on a GCP e2-micro VM (free tier, Debian 12) with cron scheduling.
+
+### Cron Schedule
+
+| Schedule | Job |
+|---|---|
+| `*/5 * * * *` | Hour sliding window |
+| `0 */6 * * *` | Day sliding window |
+| `0 3 * * *` | Daily DB backup to GCS |
+| `0 4 * * *` | Daily cleanup of reference CSVs older than 30 days |
+
+### VM Setup
+
+```bash
+# SSH into the VM
+gcloud compute ssh rt-scraper --zone=us-east1-b
+
+# Deploy updated scraper code
+gcloud compute scp rotten_tomatoes.py rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
+
+# Deploy updated movie config
+gcloud compute scp movies.json rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
+
+# Full VM setup (installs deps, Chrome, cron, Ops Agent)
+# Run deploy/setup_vm.sh on the VM
+```
+
+### Monitoring
+
+- **Logs**: `scraper.log` (Python logging) and `cron.log` (cron stdout/stderr) are shipped to Cloud Logging via the Google Cloud Ops Agent
+- **Alerts**: Cloud Monitoring emails on ERROR-level log entries (pre-check failures, Selenium errors, backup failures)
+- **Backups**: Daily SQLite snapshots to `gs://rotten-tomatoes-scraper-backups/`
+
+## Project Structure
+
+```
+├── rotten_tomatoes.py          # Main scraper
+├── movies.json                 # Movie config: [{slug, enabled}]
+├── tests/
+│   └── test_rotten_tomatoes.py # Tests (pure logic, no network/browser)
+├── deploy/
+│   ├── setup_vm.sh             # GCP VM provisioning script
+│   ├── backup_db.sh            # Daily GCS backup
+│   ├── cleanup_csv.sh          # Daily reference CSV cleanup
+│   └── ops-agent-config.yaml   # Cloud Logging agent config
+├── pyproject.toml              # Dependencies (uv managed)
+└── uv.lock                     # Lockfile
+```
