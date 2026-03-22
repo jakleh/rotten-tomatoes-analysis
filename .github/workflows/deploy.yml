@@ -1,6 +1,7 @@
 name: Deploy to GCP VM
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -8,6 +9,7 @@ on:
       - "movies.json"
       - "pyproject.toml"
       - "deploy/**"
+      - ".github/workflows/**"
 
 jobs:
   deploy:
