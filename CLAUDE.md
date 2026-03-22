@@ -13,7 +13,8 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 │   └── test_rotten_tomatoes.py # 64 tests (all pure logic, no network/browser)
 ├── deploy/
 │   ├── setup_vm.sh            # GCP VM setup script (installs deps, configures cron)
-│   └── backup_db.sh           # Daily GCS backup of reviews.db
+│   ├── backup_db.sh           # Daily GCS backup of reviews.db
+│   └── cleanup_csv.sh         # Daily cleanup of reference CSVs older than 30 days
 ├── pyproject.toml             # Dependencies (uv managed, Python >=3.14)
 ├── .gitignore
 ├── README.MD                  # Original architecture spec
@@ -50,12 +51,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Logging** — to `scraper.log` (FileHandler) + console (StreamHandler)
 - **Multi-movie config** — `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides the config for one-off runs.
 - **CLI** — `--window hour|day|both` and `--movie <slug>` (override) via argparse
-- **GCS backups** — `deploy/backup_db.sh` copies `reviews.db` to `gs://rotten-tomatoes-scraper-backups/reviews-YYYY-MM-DD.db` daily at 3 AM via cron. Uses VM's default service account (needs `Storage Object Creator` role on the bucket).
-- **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, sets up cron (including daily backup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
+- **GCS backups** — `deploy/backup_db.sh` copies `reviews.db` to `gs://rotten-tomatoes-scraper-backups/reviews-YYYY-MM-DD.db` daily at 3 AM via cron. Uses VM's default service account (needs `Storage Object Admin` role on the bucket, `cloud-platform` scope on the VM).
+- **CSV cleanup** — `deploy/cleanup_csv.sh` deletes `*_reference.csv` files older than 30 days. Runs daily at 4 AM via cron.
+- **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps, sets up cron (including daily backup and CSV cleanup). VM has 2GB swap file (needed for e2-micro's 1GB RAM).
 - **64 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, single-table migration, movie config loading. All use in-memory SQLite and mocks.
 
 ### Not Yet Implemented (Planned Next)
-- **CSV cleanup** — Cron to delete reference CSVs older than N days.
 - **Email notifications** — Alert when scraper stops working (e.g., repeated pre-check failures, Selenium errors).
 
 ## Database Schema
@@ -134,6 +135,7 @@ uv run --group dev pytest tests/ -v
   - `*/5 * * * *` — hour window
   - `0 */6 * * *` — day window
   - `0 3 * * *` — daily DB backup to GCS
+  - `0 4 * * *` — daily CSV cleanup (30+ days old)
 - **Logs**: `cron.log` (cron stdout/stderr), `scraper.log` (Python logging)
 - **SSH**: `gcloud compute ssh rt-scraper --zone=us-east1-b`
 - **Deploy code**: `gcloud compute scp ~/Desktop/rotten-tomatoes-analysis/rotten_tomatoes.py rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b`
