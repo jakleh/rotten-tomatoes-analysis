@@ -1,3 +1,13 @@
 [
-  {"slug": "project_hail_mary", "enabled": true}
+  {"slug": "project_hail_mary", "enabled": true},
+  {"slug": "ready_or_not_2_here_i_come", "enabled": true},
+  {"slug": "forbidden_fruits_2026", "enabled": true},
+  {"slug": "they_will_kill_you", "enabled": true},
+  {"slug": "the_super_mario_galaxy_movie", "enabled": false},
+  {"slug": "the_drama", "enabled": false},
+  {"slug": "the_odyssey_2026", "enabled": false},
+  {"slug": "avengers_doomsday", "enabled": false},
+  {"slug": "mother_mary", "enabled": false},
+  {"slug": "dune_part_three", "enabled": false},
+  {"slug": "you_me_and_tuscany", "enabled": false}
 ]
