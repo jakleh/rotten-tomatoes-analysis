@@ -1,0 +1,114 @@
+<div class="report-document">
+    <div class="report-doc-header">
+        <h2>{{ data.movie_display }}</h2>
+        <p class="report-date">{{ data.generated_at }}</p>
+    </div>
+
+    <div class="report-section">
+        <h3>Summary</h3>
+        <table class="report-table">
+            <tbody>
+                <tr>
+                    <th>Tomatometer</th>
+                    <td>
+                        {% if data.tomatometer is not none %}
+                        <span class="{% if data.tomatometer >= 60 %}positive{% else %}negative{% endif %}">
+                            {{ data.tomatometer }}%
+                        </span>
+                        {% else %}—{% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th>Total Reviews</th>
+                    <td>{{ data.total_reviews }}</td>
+                </tr>
+                <tr>
+                    <th>Positive</th>
+                    <td>{{ data.positive }}</td>
+                </tr>
+                <tr>
+                    <th>Negative</th>
+                    <td>{{ data.negative }}</td>
+                </tr>
+                <tr>
+                    <th>Unknown</th>
+                    <td>{{ data.unknown }}</td>
+                </tr>
+                <tr>
+                    <th>Top Critic Score</th>
+                    <td>
+                        {% if data.top_critic_pct is not none %}
+                            {{ data.top_critic_pct }}% ({{ data.top_critic_total }} reviews)
+                        {% else %}—{% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th>Avg Reviews / Day</th>
+                    <td>{{ data.avg_per_day }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    {% for key, label in chart_labels %}
+    <div class="report-section">
+        <h3>{{ label }}</h3>
+        <div id="report-chart-{{ key }}" class="report-chart-area"></div>
+    </div>
+    {% endfor %}
+
+    {% if data.publications %}
+    <div class="report-section">
+        <h3>Top Publications</h3>
+        <table class="report-table">
+            <thead>
+                <tr>
+                    <th>Publication</th>
+                    <th>Reviews</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pub in data.publications %}
+                <tr>
+                    <td>{{ pub.publication }}</td>
+                    <td>{{ pub.count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if data.score_distribution %}
+    <div class="report-section">
+        <h3>Score Distribution</h3>
+        <table class="report-table">
+            <thead>
+                <tr>
+                    <th>Score</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in data.score_distribution[:15] %}
+                <tr>
+                    <td>{{ item.score }}</td>
+                    <td>{{ item.count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+(function() {
+    var cfg = {responsive: true, displayModeBar: false};
+    var spec;
+    {% for key, label in chart_labels %}
+    spec = {{ charts[key] | safe }};
+    Plotly.newPlot("report-chart-{{ key }}", spec.data, spec.layout, cfg);
+    {% endfor %}
+})();
+</script>

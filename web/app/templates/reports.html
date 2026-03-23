@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Reports — RT Dashboard{% endblock %}
+{% block nav_reports %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Reports</h1>
+</div>
+
+<div class="report-controls">
+    <select id="movie-filter"
+            name="movie"
+            hx-get="/reports/preview"
+            hx-target="#report-preview-container"
+            hx-trigger="change"
+            hx-indicator="#preview-loading">
+        <option value="all" {% if selected_movie == "all" %}selected{% endif %}>All Movies</option>
+        {% for slug in movies %}
+        <option value="{{ slug }}" {% if selected_movie == slug %}selected{% endif %}>
+            {{ slug | replace("_", " ") | title }}
+        </option>
+        {% endfor %}
+    </select>
+    <a id="download-btn" class="btn btn-primary" href="/reports/download?movie={{ selected_movie }}">
+        Download PDF
+    </a>
+    <span id="preview-loading" class="htmx-indicator">Loading...</span>
+</div>
+
+<div class="report-preview">
+    <div id="report-preview-container">
+        {% include "partials/report_preview.html" %}
+    </div>
+</div>
+
+<script>
+document.getElementById("movie-filter").addEventListener("change", function() {
+    document.getElementById("download-btn").href = "/reports/download?movie=" + this.value;
+});
+</script>
+{% endblock %}

@@ -26,10 +26,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 │   │   ├── templating.py      # Shared Jinja2 templates instance
 │   │   ├── routers/
 │   │   │   ├── reviews.py     # /reviews endpoints (full page + HTMX table partial)
-│   │   │   └── analytics.py   # /analytics endpoints (full page + chart/calc partials)
+│   │   │   ├── analytics.py   # /analytics endpoints (full page + chart/calc partials)
+│   │   │   └── reports.py     # /reports endpoints (full page + preview partial + PDF download)
 │   │   ├── services/
 │   │   │   ├── review_service.py    # Paginated review queries
-│   │   │   └── analytics_service.py # Math + DB + Plotly JSON orchestration + caching
+│   │   │   ├── analytics_service.py # Math + DB + Plotly JSON orchestration + caching
+│   │   │   └── report_service.py    # Report data collection + fpdf2/matplotlib PDF generation
 │   │   ├── math/
 │   │   │   ├── sentiment.py   # Tomatometer over time, sentiment counts, current score
 │   │   │   ├── timing.py      # Reviews per bucket, cumulative count, avg per day
@@ -39,14 +41,16 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 │   │   │   ├── base.html      # Shared layout (nav, HTMX/Plotly CDN)
 │   │   │   ├── reviews.html   # Reviews page
 │   │   │   ├── analytics.html # Analytics page (sidebar + chart area)
+│   │   │   ├── reports.html   # Reports page (controls bar + document preview)
 │   │   │   └── partials/
 │   │   │       ├── review_table.html   # HTMX partial: review table + pagination
 │   │   │       ├── chart.html          # HTMX partial: Plotly chart
-│   │   │       └── calculation.html    # HTMX partial: stats panel
+│   │   │       ├── calculation.html    # HTMX partial: stats panel
+│   │   │       └── report_preview.html # HTMX partial: report document preview
 │   │   └── static/
-│   │       ├── style.css      # Full styling (nav, table, analytics, stats grid)
+│   │       ├── style.css      # Full styling (nav, table, analytics, reports, stats grid)
 │   │       └── app.js         # Minimal JS (Plotly resize hook)
-│   ├── tests/                 # 72 tests (review service, cache, math, analytics)
+│   ├── tests/                 # 87 tests (review service, cache, math, analytics, reports)
 │   └── deploy/
 │       └── rt-dashboard.service  # systemd unit for dashboard
 ├── .github/
@@ -102,7 +106,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs scraper files + `web/` directory as `jakelehner@rt-scraper`, runs `uv sync` for both, restarts `rt-dashboard` service.
 - **62 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence. All use in-memory SQLite and mocks.
 
-### Dashboard (web/) — In Progress
+### Dashboard (web/) — Complete
 
 **Phase 1 complete (Foundation + Reviews Table):**
 - **FastAPI app** — `web/app/main.py` with Jinja2 templates, static file serving, HTMX partials
@@ -133,8 +137,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **Log shipping** — `deploy/ops-agent-config.yaml` adds `dashboard_log` receiver for `dashboard.log`, shipped to Cloud Logging via `rt_dashboard` pipeline
 - **Memory budget** — Dashboard uses ~40-60MB RSS (no plotly/matplotlib imports at runtime). `MemoryHigh=150M`, `MemoryMax=200M` leaves 800MB+ for intermittent Selenium scraper
 
-**Remaining phases:**
-- Phase 4: Report page with document preview + fpdf2/matplotlib PDF generation (with `asyncio.Semaphore(1)` to serialize renders)
+**Phase 4 complete (Report Page + PDF Generation):**
+- **Report service** — `web/app/services/report_service.py` collects all stats, tables, and chart data via `get_report_data()`. `generate_pdf()` renders a multi-page PDF using fpdf2 for layout and matplotlib (Agg backend) for chart images.
+- **Report router** — `web/app/routers/reports.py` with `GET /reports` (full page), `GET /reports/preview` (HTMX document preview partial), `GET /reports/download` (PDF binary response). Uses `asyncio.Semaphore(1)` to serialize PDF renders + `asyncio.to_thread()` to offload CPU-bound rendering.
+- **Report templates** — `reports.html` (controls bar with movie dropdown + download button, preview area), `partials/report_preview.html` (document-style HTML preview with stats table, 4 Plotly charts reused from analytics, publications table, score distribution table).
+- **Memory safety** — Matplotlib figures closed immediately after saving to buffer; chart buffers closed after embedding in PDF (one at a time, not accumulated). Estimated peak: ~45MB additional over baseline (~118MB total, well under 200MB cap). Semaphore prevents concurrent renders.
+- **15 new tests** (87 total) — covering `get_report_data` (empty DB, with reviews, movie filter, caching, data structure) and `generate_pdf` (valid PDF bytes, empty DB, movie filter, edge cases).
 
 ## Database Schema
 
@@ -183,6 +191,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **HTMX pattern**: User interaction → HTMX sends GET → FastAPI returns HTML fragment → HTMX swaps into page. Trigger strategies: `change` for dropdowns, `click` for buttons, `keyup changed delay:500ms` for text inputs.
 - **Concurrency**: Read-only SQLite + WAL mode. Fresh connection per request, closed after response.
 - **Caching**: In-memory dict with 60s TTL keyed by `(function, movie, params_frozen_tuple)`.
+- **PDF generation**: `asyncio.Semaphore(1)` serializes renders to cap memory. `asyncio.to_thread()` offloads CPU work off the event loop. Matplotlib uses Agg backend (non-interactive); each figure is created, saved to BytesIO, and closed immediately.
 
 ### Reconciliation Rules
 - Only reconciles reviews that have **at least one DB anchor neighbor** (proving the hour window was running during that time period)

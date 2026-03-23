@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import analytics, reviews
+from app.routers import analytics, reports, reviews
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -16,6 +16,7 @@ app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="stati
 
 app.include_router(reviews.router)
 app.include_router(analytics.router)
+app.include_router(reports.router)
 
 
 @app.get("/")

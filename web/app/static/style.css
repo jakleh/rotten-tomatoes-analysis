@@ -311,6 +311,70 @@ body {
     margin-top: 0.15rem;
 }
 
+/* === Report document preview === */
+.report-document {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.report-doc-header {
+    text-align: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.report-doc-header h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.report-date {
+    color: #888;
+    font-size: 0.9rem;
+}
+
+.report-section {
+    margin-bottom: 2rem;
+}
+
+.report-section h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid #eee;
+}
+
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.report-table th,
+.report-table td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.report-table th {
+    font-weight: 600;
+    background: #fafafa;
+    width: 200px;
+}
+
+.report-table thead th {
+    width: auto;
+}
+
+.report-chart-area {
+    width: 100%;
+    min-height: 300px;
+}
+
 /* === Placeholder states === */
 .placeholder {
     display: flex;
