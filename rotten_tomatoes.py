@@ -137,6 +137,8 @@ def convert_rel_timestamp_to_abs(rel_timestamp: str) -> datetime | None:
             parsed = datetime.strptime(f"{rel_timestamp} {current_year}", "%b %d %Y").replace(
                 tzinfo=timezone.utc
             )
+            if parsed > datetime.now(timezone.utc):
+                parsed = parsed.replace(year=current_year - 1)
             return parsed
         except ValueError:
             log.warning("Could not parse date timestamp: %r", rel_timestamp)
@@ -193,8 +195,36 @@ def init_reviews_table(conn: sqlite3.Connection) -> None:
         log.info("Migrated reviews table: added tomatometer_sentiment column.")
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+    # Schema versioning for data migrations.
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    current_version = row[0] if row else 0
+
+    if current_version < 1:
+        _migrate_v1_review_ids(conn)
+        if row:
+            conn.execute("UPDATE schema_version SET version = 1")
+        else:
+            conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+        conn.commit()
+
     conn.commit()
     log.debug("Reviews table ready.")
+
+
+def _migrate_v1_review_ids(conn: sqlite3.Connection) -> None:
+    """Rehash all unique_review_ids to include movie_slug."""
+    rows = conn.execute(
+        "SELECT id, movie_slug, reviewer_name, publication_name, subjective_score FROM reviews"
+    ).fetchall()
+    if not rows:
+        return
+    for r in rows:
+        new_id = compute_review_id(r[1], r[2], r[3], r[4])
+        conn.execute("UPDATE reviews SET unique_review_id = ? WHERE id = ?", (new_id, r[0]))
+    conn.commit()
+    log.info("Migrated %d review IDs to include movie_slug in hash.", len(rows))
 
 
 def init_precheck_table(conn: sqlite3.Connection) -> None:
@@ -251,9 +281,11 @@ def record_precheck_failure(conn: sqlite3.Connection, movie_slug: str) -> int:
     return row["consecutive_failures"]
 
 
-def compute_review_id(name: str | None, publication: str | None, rating: str | None) -> str:
-    """MD5 hash of (reviewer name + publication + rating) used as the unique review ID."""
-    key = f"{name or ''}{publication or ''}{rating or ''}"
+def compute_review_id(
+    movie_slug: str, name: str | None, publication: str | None, rating: str | None
+) -> str:
+    """MD5 hash of (movie_slug + reviewer name + publication + rating) used as the unique review ID."""
+    key = f"{movie_slug}{name or ''}{publication or ''}{rating or ''}"
     return hashlib.md5(key.encode()).hexdigest()
 
 
@@ -287,6 +319,21 @@ def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bo
         return True
     except sqlite3.IntegrityError:
         return False  # Duplicate unique_review_id
+
+
+def update_sentiment(
+    conn: sqlite3.Connection, unique_review_id: str, sentiment: str | None
+) -> bool:
+    """Update tomatometer_sentiment for a review ONLY if currently NULL."""
+    if sentiment is None:
+        return False
+    cursor = conn.execute(
+        "UPDATE reviews SET tomatometer_sentiment = ? "
+        "WHERE unique_review_id = ? AND tomatometer_sentiment IS NULL",
+        (sentiment, unique_review_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def get_db_review_ids(conn: sqlite3.Connection, movie_slug: str) -> set:
@@ -551,7 +598,7 @@ def get_reviews(
         # top_critic: simple filter-based approach — if scraping from top-critics page,
         # all reviews are top critics. Easy to replace with HTML-based detection later.
         reviews.append({
-            "unique_review_id": compute_review_id(reviewer_name, publication, subjective_score),
+            "unique_review_id": compute_review_id(movie_slug, reviewer_name, publication, subjective_score),
             "timestamp": ts_str,
             "tomatometer_sentiment": tomatometer,
             "subjective_score": subjective_score,

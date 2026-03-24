@@ -12,10 +12,12 @@ from unittest.mock import patch
 import pytest
 
 from rotten_tomatoes import (
+    _migrate_v1_review_ids,
     compute_review_id,
     convert_rel_timestamp_to_abs,
     fetch_review_count,
     get_db_review_ids,
+    update_sentiment,
     get_last_review_count,
     get_timestamp_unit,
     has_new_reviews,
@@ -41,9 +43,12 @@ def make_conn() -> sqlite3.Connection:
     return conn
 
 
-def make_review(name="Alice", pub="AV Club", rating="4/5", **kwargs) -> dict:
+SLUG = "test_movie"
+
+
+def make_review(name="Alice", pub="AV Club", rating="4/5", movie_slug=SLUG, **kwargs) -> dict:
     return {
-        "unique_review_id": compute_review_id(name, pub, rating),
+        "unique_review_id": compute_review_id(movie_slug, name, pub, rating),
         "timestamp": "2026-03-21 10:00:00",
         "tomatometer_sentiment": "positive",
         "subjective_score": rating,
@@ -98,6 +103,16 @@ class TestIsAtOrOlderThan:
     def test_hours_not_older_than_days(self):
         assert not is_at_or_older_than("23h", "d")
 
+    def test_stop_at_unit_none_skips_no_reviews(self):
+        """When stop_at_unit is None, is_at_or_older_than should never be called —
+        the guard `if stop_at_unit and ...` in get_reviews() prevents it.
+        Verify the guard logic: None is falsy, so no review is filtered."""
+        timestamps = ["5m", "2h", "3d", "Mar 20"]
+        stop_at_unit = None
+        for ts in timestamps:
+            # Simulates the guard in get_reviews(): `if stop_at_unit and is_at_or_older_than(...)`
+            assert not (stop_at_unit and is_at_or_older_than(ts, stop_at_unit))
+
 
 # ── convert_rel_timestamp_to_abs ──────────────────────────────────────────────
 
@@ -127,10 +142,33 @@ class TestConvertRelTimestampToAbs:
         assert result.day == 19  # Mar 21 - 2 days = Mar 19
 
     def test_month_format(self):
-        result = convert_rel_timestamp_to_abs("Mar 15")
+        result = self._convert("Mar 15")
         assert result is not None
+        assert result.year == 2026
         assert result.month == 3
         assert result.day == 15
+
+    def test_future_month_rolls_back_year(self):
+        """A date like "Jul 15" when current date is Mar 21, 2026 → Jul 15, 2025."""
+        result = self._convert("Jul 15")
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 7
+        assert result.day == 15
+
+    def test_past_month_keeps_current_year(self):
+        """A date like "Jan 10" when current date is Mar 21, 2026 → Jan 10, 2026."""
+        result = self._convert("Jan 10")
+        assert result is not None
+        assert result.year == 2026
+        assert result.month == 1
+        assert result.day == 10
+
+    def test_future_day_in_current_month_rolls_back_year(self):
+        """A date like "Mar 25" when current date is Mar 21, 2026 → Mar 25, 2025."""
+        result = self._convert("Mar 25")
+        assert result is not None
+        assert result.year == 2025
 
     def test_empty_string_returns_none(self):
         assert convert_rel_timestamp_to_abs("") is None
@@ -143,20 +181,98 @@ class TestConvertRelTimestampToAbs:
 
 class TestComputeReviewId:
     def test_deterministic(self):
-        assert compute_review_id("Alice", "AV Club", "4/5") == compute_review_id("Alice", "AV Club", "4/5")
+        assert compute_review_id(SLUG, "Alice", "AV Club", "4/5") == compute_review_id(SLUG, "Alice", "AV Club", "4/5")
 
     def test_different_inputs_different_ids(self):
-        assert compute_review_id("Alice", "AV Club", "4/5") != compute_review_id("Bob", "AV Club", "4/5")
+        assert compute_review_id(SLUG, "Alice", "AV Club", "4/5") != compute_review_id(SLUG, "Bob", "AV Club", "4/5")
 
     def test_none_inputs_handled(self):
         # Should not raise
-        result = compute_review_id(None, None, None)
+        result = compute_review_id(SLUG, None, None, None)
         assert isinstance(result, str) and len(result) == 32
 
     def test_returns_md5_hex(self):
-        result = compute_review_id("Alice", "Pub", "5/5")
+        result = compute_review_id(SLUG, "Alice", "Pub", "5/5")
         assert len(result) == 32
         assert all(c in "0123456789abcdef" for c in result)
+
+    def test_different_movies_different_ids(self):
+        id_a = compute_review_id("movie_a", "Alice", "AV Club", "4/5")
+        id_b = compute_review_id("movie_b", "Alice", "AV Club", "4/5")
+        assert id_a != id_b
+
+
+# ── _migrate_v1_review_ids ────────────────────────────────────────────────────
+
+class TestMigrateV1ReviewIds:
+    def _make_legacy_conn(self):
+        """Create a DB with old-style hashes (no movie_slug)."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                movie_slug TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                unique_review_id TEXT UNIQUE NOT NULL,
+                subjective_score TEXT,
+                tomatometer_sentiment TEXT,
+                reconciled_timestamp INTEGER NOT NULL DEFAULT 0,
+                reviewer_name TEXT,
+                publication_name TEXT,
+                top_critic INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.commit()
+        return conn
+
+    def _old_hash(self, name, pub, rating):
+        """Compute hash the old way (no movie_slug)."""
+        import hashlib
+        key = f"{name or ''}{pub or ''}{rating or ''}"
+        return hashlib.md5(key.encode()).hexdigest()
+
+    def test_rehashes_existing_rows(self):
+        conn = self._make_legacy_conn()
+        old_id = self._old_hash("Alice", "AV Club", "4/5")
+        conn.execute(
+            "INSERT INTO reviews (movie_slug, timestamp, unique_review_id, subjective_score, "
+            "reviewer_name, publication_name, reconciled_timestamp, top_critic) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+            ("test_movie", "2026-03-21 10:00:00", old_id, "4/5", "Alice", "AV Club"),
+        )
+        conn.commit()
+
+        _migrate_v1_review_ids(conn)
+
+        row = conn.execute("SELECT unique_review_id FROM reviews").fetchone()
+        expected = compute_review_id("test_movie", "Alice", "AV Club", "4/5")
+        assert row[0] == expected
+        assert row[0] != old_id
+
+    def test_migration_is_idempotent(self):
+        conn = self._make_legacy_conn()
+        old_id = self._old_hash("Alice", "AV Club", "4/5")
+        conn.execute(
+            "INSERT INTO reviews (movie_slug, timestamp, unique_review_id, subjective_score, "
+            "reviewer_name, publication_name, reconciled_timestamp, top_critic) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+            ("test_movie", "2026-03-21 10:00:00", old_id, "4/5", "Alice", "AV Club"),
+        )
+        conn.commit()
+
+        _migrate_v1_review_ids(conn)
+        id_after_first = conn.execute("SELECT unique_review_id FROM reviews").fetchone()[0]
+
+        _migrate_v1_review_ids(conn)
+        id_after_second = conn.execute("SELECT unique_review_id FROM reviews").fetchone()[0]
+
+        assert id_after_first == id_after_second
+
+    def test_empty_table_no_error(self):
+        conn = self._make_legacy_conn()
+        _migrate_v1_review_ids(conn)  # Should not raise
 
 
 # ── insert_review / deduplication ─────────────────────────────────────────────
@@ -261,9 +377,9 @@ class TestReconcileMissingReviews:
         r_before = make_review(name="Alice", timestamp="2026-03-21 10:00:00")
         r_missing = make_review(name="Bob",   timestamp="2026-03-21 11:00:00")
         r_after   = make_review(name="Carol", timestamp="2026-03-21 12:00:00")
-        r_before["unique_review_id"] = compute_review_id("Alice", "AV Club", "4/5")
-        r_missing["unique_review_id"] = compute_review_id("Bob",   "AV Club", "4/5")
-        r_after["unique_review_id"]   = compute_review_id("Carol", "AV Club", "4/5")
+        r_before["unique_review_id"] = compute_review_id(SLUG, "Alice", "AV Club", "4/5")
+        r_missing["unique_review_id"] = compute_review_id(SLUG, "Bob",   "AV Club", "4/5")
+        r_after["unique_review_id"]   = compute_review_id(SLUG, "Carol", "AV Club", "4/5")
 
         self._seed_db(conn, [r_before, r_after])
 
@@ -280,9 +396,9 @@ class TestReconcileMissingReviews:
         r_before = make_review(name="Alice", timestamp="2026-03-21 10:00:00")
         r_missing = make_review(name="Bob",  timestamp="2026-03-21 11:00:00")
         r_after   = make_review(name="Carol",timestamp="2026-03-21 12:00:00")
-        r_before["unique_review_id"] = compute_review_id("Alice", "AV Club", "4/5")
-        r_missing["unique_review_id"] = compute_review_id("Bob",   "AV Club", "4/5")
-        r_after["unique_review_id"]   = compute_review_id("Carol", "AV Club", "4/5")
+        r_before["unique_review_id"] = compute_review_id(SLUG, "Alice", "AV Club", "4/5")
+        r_missing["unique_review_id"] = compute_review_id(SLUG, "Bob",   "AV Club", "4/5")
+        r_after["unique_review_id"]   = compute_review_id(SLUG, "Carol", "AV Club", "4/5")
 
         self._seed_db(conn, [r_before, r_after])
         reconcile_missing_reviews(conn, self.SLUG, [r_after, r_missing, r_before])
@@ -298,7 +414,7 @@ class TestReconcileMissingReviews:
         """If a missing review has no DB neighbors, it can't be identified as lagging — skip it."""
         conn = make_conn()
         r_missing = make_review(name="Bob", timestamp="2026-03-21 11:00:00")
-        r_missing["unique_review_id"] = compute_review_id("Bob", "AV Club", "4/5")
+        r_missing["unique_review_id"] = compute_review_id(SLUG, "Bob", "AV Club", "4/5")
 
         # Empty DB — no hour-window context
         count = reconcile_missing_reviews(conn, self.SLUG, [r_missing])
@@ -478,3 +594,158 @@ class TestLoadMovieConfig:
         config.write_text('{"slug": "movie_a"}')
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
             assert load_movie_config() == []
+
+
+# ── update_sentiment ─────────────────────────────────────────────────────────
+
+class TestUpdateSentiment:
+    def test_fills_null_sentiment(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment=None)
+        insert_review(conn, SLUG, review)
+        assert update_sentiment(conn, review["unique_review_id"], "positive") is True
+        row = conn.execute(
+            "SELECT tomatometer_sentiment FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row[0] == "positive"
+
+    def test_skips_existing_sentiment(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment="negative")
+        insert_review(conn, SLUG, review)
+        assert update_sentiment(conn, review["unique_review_id"], "positive") is False
+        row = conn.execute(
+            "SELECT tomatometer_sentiment FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row[0] == "negative"  # unchanged
+
+    def test_none_sentiment_returns_false(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment=None)
+        insert_review(conn, SLUG, review)
+        assert update_sentiment(conn, review["unique_review_id"], None) is False
+
+    def test_nonexistent_id_returns_false(self):
+        conn = make_conn()
+        assert update_sentiment(conn, "nonexistent_hash", "positive") is False
+
+
+# ── backfill_movie ───────────────────────────────────────────────────────────
+
+# Import here to avoid top-level Selenium dependency
+from scripts.backfill import backfill_movie
+
+
+class TestBackfillMovie:
+    def _mock_get_reviews(self, movie_slug, critic_filter, stop_at_unit=None):
+        """Return pre-built reviews for testing. Keyed by critic_filter."""
+        return self._reviews_by_filter.get(critic_filter, [])
+
+    def _make_scraped_review(self, name, pub, rating, movie_slug=SLUG,
+                             sentiment="positive", top_critic=False):
+        return {
+            "unique_review_id": compute_review_id(movie_slug, name, pub, rating),
+            "timestamp": "2026-03-21 10:00:00",
+            "tomatometer_sentiment": sentiment,
+            "subjective_score": rating,
+            "reviewer_name": name,
+            "publication_name": pub,
+            "top_critic": top_critic,
+        }
+
+    def test_inserts_new_reviews(self):
+        conn = make_conn()
+        review = self._make_scraped_review("Alice", "AV Club", "4/5")
+        self._reviews_by_filter = {"top-critics": [], "all-critics": [review]}
+
+        with patch("scripts.backfill.get_reviews", side_effect=self._mock_get_reviews):
+            stats = backfill_movie(SLUG, conn)
+
+        assert stats["inserted"] == 1
+        assert len(get_db_review_ids(conn, SLUG)) == 1
+
+    def test_updates_missing_sentiment(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment=None)
+        insert_review(conn, SLUG, review)
+
+        scraped = self._make_scraped_review("Alice", "AV Club", "4/5", sentiment="positive")
+        self._reviews_by_filter = {"top-critics": [], "all-critics": [scraped]}
+
+        with patch("scripts.backfill.get_reviews", side_effect=self._mock_get_reviews):
+            stats = backfill_movie(SLUG, conn)
+
+        assert stats["sentiment_updated"] == 1
+        assert stats["inserted"] == 0
+
+    def test_does_not_overwrite_existing_sentiment(self):
+        conn = make_conn()
+        review = make_review(tomatometer_sentiment="negative")
+        insert_review(conn, SLUG, review)
+
+        scraped = self._make_scraped_review("Alice", "AV Club", "4/5", sentiment="positive")
+        self._reviews_by_filter = {"top-critics": [], "all-critics": [scraped]}
+
+        with patch("scripts.backfill.get_reviews", side_effect=self._mock_get_reviews):
+            stats = backfill_movie(SLUG, conn)
+
+        assert stats["skipped"] == 1
+        row = conn.execute(
+            "SELECT tomatometer_sentiment FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row[0] == "negative"
+
+    def test_idempotent(self):
+        conn = make_conn()
+        review = self._make_scraped_review("Alice", "AV Club", "4/5")
+        self._reviews_by_filter = {"top-critics": [], "all-critics": [review]}
+
+        with patch("scripts.backfill.get_reviews", side_effect=self._mock_get_reviews):
+            stats1 = backfill_movie(SLUG, conn)
+            stats2 = backfill_movie(SLUG, conn)
+
+        assert stats1["inserted"] == 1
+        assert stats2["inserted"] == 0
+        assert stats2["skipped"] == 1
+
+    def test_two_pass_sets_top_critic(self):
+        conn = make_conn()
+        top_review = self._make_scraped_review("Alice", "AV Club", "4/5", top_critic=True)
+        all_review = self._make_scraped_review("Alice", "AV Club", "4/5", top_critic=False)
+        self._reviews_by_filter = {"top-critics": [top_review], "all-critics": [all_review]}
+
+        with patch("scripts.backfill.get_reviews", side_effect=self._mock_get_reviews):
+            stats = backfill_movie(SLUG, conn)
+
+        assert stats["inserted"] == 1  # inserted from top-critics, skipped from all-critics
+        row = conn.execute("SELECT top_critic FROM reviews").fetchone()
+        assert row[0] == 1
+
+    def test_dry_run_writes_nothing(self):
+        conn = make_conn()
+        review = self._make_scraped_review("Alice", "AV Club", "4/5")
+        self._reviews_by_filter = {"top-critics": [], "all-critics": [review]}
+
+        with patch("scripts.backfill.get_reviews", side_effect=self._mock_get_reviews):
+            stats = backfill_movie(SLUG, conn, dry_run=True)
+
+        assert stats["inserted"] == 1  # counted but not written
+        assert len(get_db_review_ids(conn, SLUG)) == 0  # nothing in DB
+
+    def test_continues_on_selenium_error(self):
+        conn = make_conn()
+        review = self._make_scraped_review("Alice", "AV Club", "4/5")
+
+        def mock_get_reviews(movie_slug, critic_filter, stop_at_unit=None):
+            if critic_filter == "top-critics":
+                raise RuntimeError("Selenium crashed")
+            return [review]
+
+        with patch("scripts.backfill.get_reviews", side_effect=mock_get_reviews):
+            stats = backfill_movie(SLUG, conn)
+
+        assert stats["errors"] == 1
+        assert stats["inserted"] == 1  # all-critics pass still worked

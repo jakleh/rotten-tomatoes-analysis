@@ -9,8 +9,10 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 ```
 ├── rotten_tomatoes.py          # Main scraper (scraping, DB, reconciliation, pre-check)
 ├── movies.json                # Movie config: list of {slug, enabled} objects
+├── scripts/
+│   └── backfill.py            # One-time backfill of historical reviews (run locally)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 62 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 81 tests (all pure logic, no network/browser)
 ├── deploy/
 │   ├── setup_vm.sh            # GCP VM setup script (installs deps, cron, Ops Agent, dashboard)
 │   ├── backup_db.sh           # Daily GCS backup of reviews.db
@@ -92,10 +94,10 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **`get_reviews(movie_slug, critic_filter, stop_at_unit)`** — Selenium scraper with early stopping. `stop_at_unit='h'` for hour window, `'d'` for day window. Returns list of review dicts.
 - **`scrape_hour_sliding_window(movie_slug)`** — Runs every 5 min via cron. Pre-checks review count via HTTP first; only launches Selenium if count changed.
 - **`scrape_day_sliding_window(movie_slug)`** — Runs every 6 hours via cron. Always does full scrape. Reconciles lagging reviews, exports reference CSV, calibrates pre-check state.
-- **SQLite layer** — `init_reviews_table` (single unified table with `movie_slug` column), `insert_review` (dedup via MD5 unique_review_id), `get_db_review_ids`, `get_db_reviews_sorted`, `export_reference_csv`
+- **SQLite layer** — `init_reviews_table` (single unified table with `movie_slug` column, schema versioning via `schema_version` table), `insert_review` (dedup via MD5 unique_review_id), `update_sentiment` (fills NULL tomatometer_sentiment only), `get_db_review_ids`, `get_db_reviews_sorted`, `export_reference_csv`
 - **Pre-check system** — `fetch_review_count()` hits main movie page (`/m/{slug}`) with `requests`, extracts count via regex `(\d+) Reviews`. `has_new_reviews()` compares against stored count in `precheck_state` table. Tracks consecutive failures; logs WARNING each time, ERROR after 10+. Falls back to full Selenium scrape on failure.
 - **Reconciliation** — `reconcile_missing_reviews()` groups consecutive missing reviews, interpolates timestamps from DB anchor neighbors. Only reconciles reviews with at least one DB anchor (no false reconciliation on first run/empty DB).
-- **Deduplication** — MD5 hash of `(reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via SQLite UNIQUE constraint.
+- **Deduplication** — MD5 hash of `(movie_slug + reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via SQLite UNIQUE constraint. Schema migration v1 rehashes existing rows automatically.
 - **Logging** — to `scraper.log` (FileHandler) + console (StreamHandler)
 - **Multi-movie config** — `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides the config for one-off runs.
 - **CLI** — `--window hour|day|both` and `--movie <slug>` (override) via argparse
@@ -104,7 +106,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **Email notifications** — Google Cloud Ops Agent ships `scraper.log` and `cron.log` to Cloud Logging. Cloud Monitoring alert policy emails on ERROR-level entries (pre-check failures, Selenium errors, backup failures).
 - **GCP deployment** — `deploy/setup_vm.sh` handles everything: installs Chromium, uv, Python deps (scraper + dashboard), Ops Agent, sets up cron (including daily backup and CSV cleanup), and registers `rt-dashboard` systemd service. VM has 2GB swap file (needed for e2-micro's 1GB RAM).
 - **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs scraper files + `web/` directory as `jakelehner@rt-scraper`, runs `uv sync` for both, restarts `rt-dashboard` service.
-- **62 tests** — covering timestamp utils, MD5 hashing, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence. All use in-memory SQLite and mocks.
+- **Timestamp year heuristic** — `convert_rel_timestamp_to_abs()` rolls back to previous year when parsed date ("Mar 22") is in the future. Known limitation: reviews 2+ years old may be off by 1 year.
+- **Backfill script** — `scripts/backfill.py` one-time tool to scrape all historical reviews and fill missing sentiment. Two-pass (top-critics → all-critics) preserves `top_critic` flag. Run locally against a copy of `reviews.db`. Supports `--movie`, `--db`, `--dry-run`.
+- **81 tests** — covering timestamp utils (incl. year heuristic), MD5 hashing (incl. cross-movie uniqueness), hash migration, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence, update_sentiment, backfill logic. All use in-memory SQLite and mocks.
 
 ### Dashboard (web/) — Complete
 
@@ -153,7 +157,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 | id | INTEGER | Auto-increment primary key |
 | movie_slug | TEXT | Movie being tracked (e.g., "project_hail_mary") |
 | timestamp | TEXT | UTC datetime string |
-| unique_review_id | TEXT (UNIQUE) | MD5 hash of (name + publication + rating) |
+| unique_review_id | TEXT (UNIQUE) | MD5 hash of (movie_slug + name + publication + rating) |
 | subjective_score | TEXT | e.g., "3/5", "A-" |
 | tomatometer_sentiment | TEXT | e.g., "positive", "negative" (from score-icon-critics element) |
 | reconciled_timestamp | INTEGER | 1 if timestamp was interpolated |
@@ -169,6 +173,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 | last_review_count | INTEGER | Last known review count from HTTP pre-check |
 | consecutive_failures | INTEGER | Consecutive pre-check failures (resets on success) |
 | last_checked | TEXT | UTC datetime of last check |
+
+### `schema_version` table
+
+| Field | Type | Description |
+|---|---|---|
+| version | INTEGER | Current schema version (1 = review IDs rehashed with movie_slug) |
 
 ## Architecture
 
@@ -281,7 +291,8 @@ After completing any non-trivial task, walk through this checklist with the user
 ### Tech Backlog
 Track known improvements or deferred work here. Remove items as they're completed.
 
-- (none currently)
+- Extract `parse_review_cards(html)` from `get_reviews()` for unit-testable parsing logic
+- Security test suite: SQL injection, XSS, and parsing robustness tests with adversarial inputs
 
 ## Security Decisions & Tradeoffs
 
