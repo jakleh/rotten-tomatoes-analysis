@@ -8,8 +8,10 @@
  * This file exists as a hook for future enhancements.
  */
 
-// Re-process any Plotly charts after HTMX swaps content
+// Resize Plotly charts after HTMX swaps content into the DOM
 document.body.addEventListener("htmx:afterSwap", function (event) {
-    // Plotly inline scripts are auto-executed by HTMX.
-    // If we later need to resize or reflow charts, handle it here.
+    var chart = event.detail.target.querySelector(".js-plotly-plot");
+    if (chart) {
+        Plotly.Plots.resize(chart);
+    }
 });
