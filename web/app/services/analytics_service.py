@@ -99,10 +99,16 @@ def _build_chart_spec(reviews: list[dict], chart: str) -> dict:
 
 def _chart_tomatometer_over_time(reviews: list[dict]) -> dict:
     points = tomatometer_over_time(reviews)
+    scores = [p["score"] for p in points]
+    if scores:
+        y_min = max(0, min(scores) - 5)
+        y_max = min(100, max(scores) + 5)
+    else:
+        y_min, y_max = 0, 100
     return {
         "data": [{
             "x": [p["timestamp"] for p in points],
-            "y": [p["score"] for p in points],
+            "y": scores,
             "type": "scatter",
             "mode": "lines",
             "name": "Tomatometer %",
@@ -111,7 +117,7 @@ def _chart_tomatometer_over_time(reviews: list[dict]) -> dict:
         "layout": {
             "title": "Tomatometer Over Time",
             "xaxis": {"title": "Time"},
-            "yaxis": {"title": "Score (%)", "rangemode": "tozero"},
+            "yaxis": {"title": "Score (%)", "range": [y_min, y_max]},
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
         },
     }
