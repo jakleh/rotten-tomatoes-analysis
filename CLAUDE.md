@@ -12,7 +12,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 ├── scripts/
 │   └── backfill.py            # One-time backfill of historical reviews (run locally)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 81 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 84 tests (all pure logic, no network/browser)
 ├── deploy/
 │   ├── setup_vm.sh            # GCP VM setup script (installs deps, cron, Ops Agent, dashboard)
 │   ├── backup_db.sh           # Daily GCS backup of reviews.db
@@ -80,7 +80,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **Database**: SQLite (local file `reviews.db`) with WAL mode (set in `init_reviews_table`)
 - **Deployment**: GCP e2-micro VM (`rt-scraper`, zone `us-east1-b`) with cron
 - **Scraping method**: Selenium (RT's `/napi/` endpoint returns 404; verified via curl)
-- **Interpolation**: Even distribution between known timestamps, all marked `reconciled_timestamp=True`
+- **Interpolation**: Even distribution between known timestamps, all marked `timestamp_confidence='d'`
 - **Top critic detection**: Filter-based — scrape `top-critics` first (all are top critics), then `all-critics`. Isolated in one line, easy to change later.
 - **Dashboard frontend**: Jinja2 + HTMX + Plotly.js (no JS build pipeline, all-Python stack)
 - **Dashboard hosting**: Same e2-micro VM, separate systemd service, binds to `127.0.0.1:8000` (SSH tunnel for access)
@@ -98,6 +98,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **Pre-check system** — `fetch_review_count()` hits main movie page (`/m/{slug}`) with `requests`, extracts count via regex `(\d+) Reviews`. `has_new_reviews()` compares against stored count in `precheck_state` table. Tracks consecutive failures; logs WARNING each time, ERROR after 10+. Falls back to full Selenium scrape on failure.
 - **Reconciliation** — `reconcile_missing_reviews()` groups consecutive missing reviews, interpolates timestamps from DB anchor neighbors. Only reconciles reviews with at least one DB anchor (no false reconciliation on first run/empty DB).
 - **Deduplication** — MD5 hash of `(movie_slug + reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via SQLite UNIQUE constraint. Schema migration v1 rehashes existing rows automatically.
+- **Timestamp confidence** — `timestamp_confidence` column records the granularity of each review's timestamp: `"m"` (minute-level from RT), `"h"` (hour-level), `"d"` (day/date-level or interpolated). Set at scrape time from the RT time marker. Schema migration v2 replaces the old `reconciled_timestamp` boolean, defaulting all existing rows to `"d"`.
 - **Logging** — to `scraper.log` (FileHandler) + console (StreamHandler)
 - **Multi-movie config** — `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides the config for one-off runs.
 - **CLI** — `--window hour|day|both` and `--movie <slug>` (override) via argparse
@@ -108,7 +109,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **CI/CD** — `.github/workflows/deploy.yml` auto-deploys to GCP VM on push to main. Uses Workload Identity Federation (no stored keys). SCPs scraper files + `web/` directory as `jakelehner@rt-scraper`, runs `uv sync` for both, restarts `rt-dashboard` service.
 - **Timestamp year heuristic** — `convert_rel_timestamp_to_abs()` rolls back to previous year when parsed date ("Mar 22") is in the future. Known limitation: reviews 2+ years old may be off by 1 year.
 - **Backfill script** — `scripts/backfill.py` one-time tool to scrape all historical reviews and fill missing sentiment. Two-pass (top-critics → all-critics) preserves `top_critic` flag. Run locally against a copy of `reviews.db`. Supports `--movie`, `--db`, `--dry-run`.
-- **81 tests** — covering timestamp utils (incl. year heuristic), MD5 hashing (incl. cross-movie uniqueness), hash migration, interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence, update_sentiment, backfill logic. All use in-memory SQLite and mocks.
+- **84 tests** — covering timestamp utils (incl. year heuristic), MD5 hashing (incl. cross-movie uniqueness), hash migration (v1 + v2), interpolation, DB dedup, reconciliation, pre-check state, fetch_review_count, has_new_reviews, movie config loading, tomatometer_sentiment persistence, update_sentiment, backfill logic. All use in-memory SQLite and mocks.
 
 ### Dashboard (web/) — Complete
 
@@ -160,7 +161,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 | unique_review_id | TEXT (UNIQUE) | MD5 hash of (movie_slug + name + publication + rating) |
 | subjective_score | TEXT | e.g., "3/5", "A-" |
 | tomatometer_sentiment | TEXT | e.g., "positive", "negative" (from score-icon-critics element) |
-| reconciled_timestamp | INTEGER | 1 if timestamp was interpolated |
+| timestamp_confidence | TEXT | Timestamp granularity: "m" (minute), "h" (hour), "d" (day/date) |
 | reviewer_name | TEXT | |
 | publication_name | TEXT | |
 | top_critic | INTEGER | 1 if from top-critics filter |
@@ -208,7 +209,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - Only reconciles reviews that have **at least one DB anchor neighbor** (proving the hour window was running during that time period)
 - No anchors = reviews are just unseen (first run / empty DB), not lagging → skip
 - Timestamps are evenly distributed between anchor points
-- All reconciled reviews marked `reconciled_timestamp=True`
+- All reconciled reviews marked `timestamp_confidence='d'`
 - **Reviews are never deleted** — insert-only system
 
 ## How to Run
@@ -294,8 +295,7 @@ Track known improvements or deferred work here. Remove items as they're complete
 Detailed context and implementation plans: `.claude/backlog-context.md`
 
 1. Normalize subjective scores into a 0-1 scale; replace raw count chart with "fresh review strength distribution"
-2. Replace `reconciled_timestamp` boolean with `timestamp_confidence` column ("exact", "hour", "day", "interpolated", "backfill") — includes migration + backfill identification
-3. Extract `parse_review_cards(html)` from `get_reviews()` + add mocked HTTP boundary tests
+2. Extract `parse_review_cards(html)` from `get_reviews()` + add mocked HTTP boundary tests
 - Security test suite: SQL injection, XSS, and parsing robustness tests with adversarial inputs
 
 ## Security Decisions & Tradeoffs

@@ -13,6 +13,7 @@ import pytest
 
 from rotten_tomatoes import (
     _migrate_v1_review_ids,
+    _migrate_v2_timestamp_confidence,
     compute_review_id,
     convert_rel_timestamp_to_abs,
     fetch_review_count,
@@ -55,7 +56,7 @@ def make_review(name="Alice", pub="AV Club", rating="4/5", movie_slug=SLUG, **kw
         "reviewer_name": name,
         "publication_name": pub,
         "top_critic": False,
-        "reconciled_timestamp": False,
+        "timestamp_confidence": "d",
         **kwargs,
     }
 
@@ -275,6 +276,66 @@ class TestMigrateV1ReviewIds:
         _migrate_v1_review_ids(conn)  # Should not raise
 
 
+class TestMigrateV2TimestampConfidence:
+    """Tests for _migrate_v2_timestamp_confidence — replaces reconciled_timestamp with timestamp_confidence."""
+
+    def _make_pre_v2_conn(self):
+        """Create an in-memory DB with the pre-v2 schema (has reconciled_timestamp)."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                movie_slug TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                unique_review_id TEXT UNIQUE NOT NULL,
+                subjective_score TEXT,
+                tomatometer_sentiment TEXT,
+                reconciled_timestamp INTEGER NOT NULL DEFAULT 0,
+                reviewer_name TEXT,
+                publication_name TEXT,
+                top_critic INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.commit()
+        return conn
+
+    def test_adds_column_and_drops_old(self):
+        conn = self._make_pre_v2_conn()
+        conn.execute(
+            "INSERT INTO reviews (movie_slug, timestamp, unique_review_id, reconciled_timestamp) "
+            "VALUES ('m', '2026-01-01 12:00:00', 'id1', 0)"
+        )
+        conn.commit()
+
+        _migrate_v2_timestamp_confidence(conn)
+
+        row = conn.execute("SELECT * FROM reviews").fetchone()
+        assert row["timestamp_confidence"] == "d"
+        # reconciled_timestamp column should be gone
+        col_names = [desc[0] for desc in conn.execute("SELECT * FROM reviews").description]
+        assert "reconciled_timestamp" not in col_names
+        assert "timestamp_confidence" in col_names
+
+    def test_reconciled_rows_get_d(self):
+        conn = self._make_pre_v2_conn()
+        conn.execute(
+            "INSERT INTO reviews (movie_slug, timestamp, unique_review_id, reconciled_timestamp) "
+            "VALUES ('m', '2026-01-01 12:00:00', 'id1', 1)"
+        )
+        conn.commit()
+
+        _migrate_v2_timestamp_confidence(conn)
+
+        row = conn.execute("SELECT timestamp_confidence FROM reviews").fetchone()
+        assert row["timestamp_confidence"] == "d"
+
+    def test_empty_table_no_error(self):
+        conn = self._make_pre_v2_conn()
+        _migrate_v2_timestamp_confidence(conn)  # Should not raise
+
+
 # ── insert_review / deduplication ─────────────────────────────────────────────
 
 class TestInsertReview:
@@ -408,7 +469,7 @@ class TestReconcileMissingReviews:
         rows = get_db_reviews_sorted(conn, self.SLUG)
         bob_row = next(r for r in rows if r["reviewer_name"] == "Bob")
         assert bob_row["timestamp"] == "2026-03-21 11:00:00"
-        assert bob_row["reconciled_timestamp"] == 1
+        assert bob_row["timestamp_confidence"] == "d"
 
     def test_no_db_context_skips_missing_review(self):
         """If a missing review has no DB neighbors, it can't be identified as lagging — skip it."""

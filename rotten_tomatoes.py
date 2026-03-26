@@ -184,7 +184,7 @@ def init_reviews_table(conn: sqlite3.Connection) -> None:
             unique_review_id      TEXT UNIQUE NOT NULL,
             subjective_score      TEXT,
             tomatometer_sentiment TEXT,
-            reconciled_timestamp  INTEGER NOT NULL DEFAULT 0,
+            timestamp_confidence  TEXT NOT NULL DEFAULT 'd',
             reviewer_name         TEXT,
             publication_name      TEXT,
             top_critic            INTEGER NOT NULL DEFAULT 0
@@ -211,6 +211,11 @@ def init_reviews_table(conn: sqlite3.Connection) -> None:
             conn.execute("INSERT INTO schema_version (version) VALUES (1)")
         conn.commit()
 
+    if current_version < 2:
+        _migrate_v2_timestamp_confidence(conn)
+        conn.execute("UPDATE schema_version SET version = 2")
+        conn.commit()
+
     conn.commit()
     log.debug("Reviews table ready.")
 
@@ -227,6 +232,24 @@ def _migrate_v1_review_ids(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE reviews SET unique_review_id = ? WHERE id = ?", (new_id, r[0]))
     conn.commit()
     log.info("Migrated %d review IDs to include movie_slug in hash.", len(rows))
+
+
+def _migrate_v2_timestamp_confidence(conn: sqlite3.Connection) -> None:
+    """Replace reconciled_timestamp with timestamp_confidence column.
+
+    All existing rows get 'd' (day-level confidence) as a conservative default.
+    """
+    try:
+        conn.execute("ALTER TABLE reviews ADD COLUMN timestamp_confidence TEXT NOT NULL DEFAULT 'd'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    conn.execute("UPDATE reviews SET timestamp_confidence = 'd'")
+    # Drop the old column if it exists (won't exist on fresh DBs).
+    col_names = [row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()]
+    if "reconciled_timestamp" in col_names:
+        conn.execute("ALTER TABLE reviews DROP COLUMN reconciled_timestamp")
+    conn.commit()
+    log.info("Migrated reviews table: replaced reconciled_timestamp with timestamp_confidence.")
 
 
 def init_precheck_table(conn: sqlite3.Connection) -> None:
@@ -301,7 +324,7 @@ def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bo
             """
             INSERT INTO reviews
                 (movie_slug, timestamp, unique_review_id, subjective_score,
-                 tomatometer_sentiment, reconciled_timestamp, reviewer_name,
+                 tomatometer_sentiment, timestamp_confidence, reviewer_name,
                  publication_name, top_critic)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -311,7 +334,7 @@ def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bo
                 review["unique_review_id"],
                 review.get("subjective_score"),
                 review.get("tomatometer_sentiment"),
-                int(bool(review.get("reconciled_timestamp", False))),
+                review.get("timestamp_confidence", "d"),
                 review.get("reviewer_name"),
                 review.get("publication_name"),
                 int(bool(review.get("top_critic", False))),
@@ -363,7 +386,7 @@ def export_reference_csv(conn: sqlite3.Connection, movie_slug: str, critic_filte
     filename = f"{movie_slug}_{critic_filter}_{ts}_reference.csv"
     fieldnames = [
         "id", "movie_slug", "timestamp", "unique_review_id", "subjective_score",
-        "tomatometer_sentiment", "reconciled_timestamp", "reviewer_name",
+        "tomatometer_sentiment", "timestamp_confidence", "reviewer_name",
         "publication_name", "top_critic",
     ]
     with open(filename, "w", newline="", encoding="utf-8") as f:
@@ -503,7 +526,7 @@ def get_reviews(
     Returns:
         List of review dicts with keys: unique_review_id, timestamp,
         tomatometer_sentiment, subjective_score, reviewer_name, publication_name,
-        top_critic, reconciled_timestamp.
+        top_critic, timestamp_confidence.
     """
     url = f"https://www.rottentomatoes.com/m/{movie_slug}/reviews/{critic_filter}"
     top_critic = (critic_filter == "top-critics")
@@ -599,6 +622,10 @@ def get_reviews(
 
         # top_critic: simple filter-based approach — if scraping from top-critics page,
         # all reviews are top critics. Easy to replace with HTML-based detection later.
+        # Map RT time unit to confidence: "m", "h", "d"; "date" (e.g. "Mar 12") → "d"
+        unit = get_timestamp_unit(rel_ts)
+        confidence = unit if unit in ("m", "h", "d") else "d"
+
         reviews.append({
             "unique_review_id": compute_review_id(movie_slug, reviewer_name, publication, subjective_score),
             "timestamp": ts_str,
@@ -607,7 +634,7 @@ def get_reviews(
             "reviewer_name": reviewer_name,
             "publication_name": publication,
             "top_critic": top_critic,
-            "reconciled_timestamp": False,
+            "timestamp_confidence": confidence,
         })
 
     log.info(
@@ -652,7 +679,7 @@ def reconcile_missing_reviews(
     """
     Find reviews present in `scraped_reviews` but absent from the database.
     Interpolate their timestamps from neighboring known reviews and insert them
-    with reconciled_timestamp=True.
+    with timestamp_confidence='d'.
 
     Returns the number of reviews reconciled and inserted.
     """
@@ -707,7 +734,7 @@ def reconcile_missing_reviews(
         for review, ts in zip(run, timestamps):
             reconciled = dict(review)
             reconciled["timestamp"] = ts
-            reconciled["reconciled_timestamp"] = True
+            reconciled["timestamp_confidence"] = "d"
 
             if insert_review(conn, movie_slug, reconciled):
                 reconciled_count += 1

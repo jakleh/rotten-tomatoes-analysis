@@ -24,7 +24,7 @@ The scraper uses two complementary sliding windows to maintain a complete, order
 
 ### Reconciliation
 
-Reviews that the hour window missed get their timestamps interpolated — evenly distributed between the nearest known reviews in the database. All interpolated reviews are flagged with `reconciled_timestamp = 1`. Reviews are never deleted; the system is insert-only.
+Reviews that the hour window missed get their timestamps interpolated — evenly distributed between the nearest known reviews in the database. Each review's `timestamp_confidence` records the granularity of its timestamp: `m` (minute), `h` (hour), or `d` (day/date). Interpolated reviews get `d`. Reviews are never deleted; the system is insert-only.
 
 ### Deduplication
 
@@ -42,7 +42,7 @@ Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name 
 | `unique_review_id` | TEXT (UNIQUE) | MD5 hash for deduplication |
 | `subjective_score` | TEXT | e.g., `3/5`, `A-` |
 | `tomatometer_sentiment` | TEXT | e.g., `positive`, `negative` |
-| `reconciled_timestamp` | INTEGER | `1` if timestamp was interpolated |
+| `timestamp_confidence` | TEXT | Timestamp granularity: `m` (minute), `h` (hour), `d` (day/date) |
 | `reviewer_name` | TEXT | |
 | `publication_name` | TEXT | |
 | `top_critic` | INTEGER | `1` if from top-critics filter |

@@ -76,7 +76,7 @@ def backfill_movie(
                 else:
                     stats["skipped"] += 1
             else:
-                review["reconciled_timestamp"] = False
+                review["timestamp_confidence"] = "d"
                 if not dry_run:
                     insert_review(conn, movie_slug, review)
                 stats["inserted"] += 1

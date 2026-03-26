@@ -17,7 +17,7 @@ def _make_conn() -> sqlite3.Connection:
             unique_review_id      TEXT UNIQUE NOT NULL,
             subjective_score      TEXT,
             tomatometer_sentiment TEXT,
-            reconciled_timestamp  INTEGER NOT NULL DEFAULT 0,
+            timestamp_confidence  TEXT NOT NULL DEFAULT 'd',
             reviewer_name         TEXT,
             publication_name      TEXT,
             top_critic            INTEGER NOT NULL DEFAULT 0
@@ -37,13 +37,13 @@ def _insert_review(
     publication_name: str = "Pub",
     subjective_score: str = "3/5",
     tomatometer_sentiment: str = "positive",
-    reconciled_timestamp: int = 0,
+    timestamp_confidence: str = "d",
     top_critic: int = 0,
 ) -> None:
     conn.execute(
         """INSERT INTO reviews
            (movie_slug, timestamp, unique_review_id, subjective_score,
-            tomatometer_sentiment, reconciled_timestamp, reviewer_name,
+            tomatometer_sentiment, timestamp_confidence, reviewer_name,
             publication_name, top_critic)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
@@ -52,7 +52,7 @@ def _insert_review(
             unique_review_id,
             subjective_score,
             tomatometer_sentiment,
-            reconciled_timestamp,
+            timestamp_confidence,
             reviewer_name,
             publication_name,
             top_critic,

@@ -9,7 +9,7 @@
                 <th>Score</th>
                 <th>Sentiment</th>
                 <th>Top Critic</th>
-                <th>Reconciled</th>
+                <th>Confidence</th>
             </tr>
         </thead>
         <tbody>
@@ -30,7 +30,15 @@
                     {% endif %}
                 </td>
                 <td>{{ "Yes" if review.top_critic else "No" }}</td>
-                <td>{{ "Yes" if review.reconciled_timestamp else "No" }}</td>
+                <td>
+                    {% if review.timestamp_confidence == "m" %}
+                        <span class="badge positive">m</span>
+                    {% elif review.timestamp_confidence == "h" %}
+                        <span class="badge neutral">h</span>
+                    {% else %}
+                        <span class="badge neutral">d</span>
+                    {% endif %}
+                </td>
             </tr>
             {% else %}
             <tr>
