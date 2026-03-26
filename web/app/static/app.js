@@ -1,17 +1,23 @@
 /**
  * RT Dashboard — minimal JS helpers.
  *
- * Plotly charts returned by HTMX partials include inline <script> tags
- * that call Plotly.newPlot(). HTMX processes inline scripts in swapped
- * content by default, so no special init logic is needed here.
- *
- * This file exists as a hook for future enhancements.
+ * Plotly charts are rendered with autosize:false and explicit dimensions.
+ * This file handles resizing on window resize and after HTMX content swaps.
  */
 
-// Resize Plotly charts after HTMX swaps content into the DOM
+// Resize Plotly chart to fit container width (preserving layout height)
+function resizePlotlyChart() {
+    var chart = document.querySelector(".js-plotly-plot");
+    if (chart && chart.parentElement) {
+        Plotly.relayout(chart, {width: chart.parentElement.clientWidth - 32});
+    }
+}
+
+window.addEventListener("resize", resizePlotlyChart);
+
 document.body.addEventListener("htmx:afterSwap", function (event) {
     var chart = event.detail.target.querySelector(".js-plotly-plot");
     if (chart) {
-        Plotly.Plots.resize(chart);
+        resizePlotlyChart();
     }
 });

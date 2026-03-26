@@ -1,9 +1,14 @@
-<div id="plotly-chart" style="width:100%;"></div>
+<div id="plotly-chart"></div>
 <span id="chart-loading" class="htmx-indicator">Loading chart...</span>
 <script>
 (function() {
+    var el = document.getElementById("plotly-chart");
     var spec = {{ chart_json | safe }};
-    var config = {responsive: true, displayModeBar: false};
-    Plotly.newPlot("plotly-chart", spec.data, spec.layout, config);
+    var layout = Object.assign({}, spec.layout, {
+        autosize: false,
+        width: el.parentElement.clientWidth - 32,
+        height: spec.layout.height || 400
+    });
+    Plotly.newPlot(el, spec.data, layout, {displayModeBar: false});
 })();
 </script>
