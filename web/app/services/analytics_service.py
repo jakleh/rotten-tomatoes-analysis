@@ -113,6 +113,7 @@ def _chart_tomatometer_over_time(reviews: list[dict]) -> dict:
             "title": "Tomatometer Over Time",
             "xaxis": {"title": "Time"},
             "yaxis": {"title": "Score (%)", "range": [y_min, y_max]},
+            "height": 400,
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
         },
     }
@@ -132,6 +133,7 @@ def _chart_review_volume(reviews: list[dict]) -> dict:
             "title": "Reviews Per Day",
             "xaxis": {"title": "Date"},
             "yaxis": {"title": "Count"},
+            "height": 400,
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
         },
     }
@@ -166,6 +168,7 @@ def _chart_top_critic_comparison(reviews: list[dict]) -> dict:
             "title": "Top Critics vs Regular Critics",
             "barmode": "group",
             "yaxis": {"title": "Percentage", "range": [0, 100]},
+            "height": 400,
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
         },
     }
@@ -188,6 +191,7 @@ def _chart_cumulative_reviews(reviews: list[dict]) -> dict:
             "title": "Cumulative Reviews Over Time",
             "xaxis": {"title": "Time"},
             "yaxis": {"title": "Total Reviews"},
+            "height": 400,
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
         },
     }
