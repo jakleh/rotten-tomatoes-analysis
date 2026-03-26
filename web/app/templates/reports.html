@@ -15,7 +15,6 @@
             hx-target="#report-preview-container"
             hx-trigger="change"
             hx-indicator="#preview-loading">
-        <option value="all" {% if selected_movie == "all" %}selected{% endif %}>All Movies</option>
         {% for slug in movies %}
         <option value="{{ slug }}" {% if selected_movie == slug %}selected{% endif %}>
             {{ slug | replace("_", " ") | title }}

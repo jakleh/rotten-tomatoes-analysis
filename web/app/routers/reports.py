@@ -28,10 +28,12 @@ _PREVIEW_CHARTS = [
 async def reports_page(
     request: Request,
     conn: sqlite3.Connection = Depends(get_connection),
-    movie: str = Query("all"),
+    movie: str = Query(None),
 ):
     """Full reports page (initial load)."""
     movies = load_movie_slugs()
+    if not movie or movie == "all":
+        movie = movies[0] if movies else "all"
     data = get_report_data(conn, movie)
     charts = {key: get_chart(conn, movie, key) for key, _ in _PREVIEW_CHARTS}
     return templates.TemplateResponse(
@@ -51,7 +53,7 @@ async def reports_page(
 async def reports_preview(
     request: Request,
     conn: sqlite3.Connection = Depends(get_connection),
-    movie: str = Query("all"),
+    movie: str = Query(None),
 ):
     """HTMX partial: report document preview."""
     data = get_report_data(conn, movie)
@@ -70,7 +72,7 @@ async def reports_preview(
 @router.get("/download")
 async def download_report(
     conn: sqlite3.Connection = Depends(get_connection),
-    movie: str = Query("all"),
+    movie: str = Query(None),
 ):
     """Generate and return a PDF report."""
     async with _render_semaphore:

@@ -16,11 +16,13 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 async def analytics_page(
     request: Request,
     conn: sqlite3.Connection = Depends(get_connection),
-    movie: str = Query("all"),
+    movie: str = Query(None),
     chart: str = Query("tomatometer_over_time"),
 ):
     """Full analytics page (initial load)."""
     movies = load_movie_slugs()
+    if not movie or movie == "all":
+        movie = movies[0] if movies else "all"
     chart_json = get_chart(conn, movie, chart)
     stats = get_stats(conn, movie)
     return templates.TemplateResponse(
@@ -41,7 +43,7 @@ async def analytics_page(
 async def analytics_chart(
     request: Request,
     conn: sqlite3.Connection = Depends(get_connection),
-    movie: str = Query("all"),
+    movie: str = Query(None),
     chart: str = Query("tomatometer_over_time"),
 ):
     """HTMX partial: chart container."""
@@ -59,7 +61,7 @@ async def analytics_chart(
 async def analytics_calc(
     request: Request,
     conn: sqlite3.Connection = Depends(get_connection),
-    movie: str = Query("all"),
+    movie: str = Query(None),
 ):
     """HTMX partial: stats calculations panel."""
     stats = get_stats(conn, movie)

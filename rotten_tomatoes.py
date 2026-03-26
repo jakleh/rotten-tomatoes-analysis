@@ -2,8 +2,10 @@
 rotten_tomatoes.py — Rotten Tomatoes review scraper with time-series database.
 
 Architecture:
-  - scrape_hour_sliding_window(): runs every N minutes, captures reviews from the past hour
-  - scrape_day_sliding_window():  runs every N hours, reconciles lagging reviews
+  - scrape_hour_sliding_window(): runs every N minutes, captures reviews from the past hour.
+    Frequency ensures lagging reviews are caught within a short time horizon.
+  - scrape_day_sliding_window():  runs every N hours, reconciles lagging reviews missed
+    by the hour window. Also exports reference CSVs and calibrates pre-check state.
   - SQLite database: single `reviews` table with movie_slug column, deduplication via MD5 hash
 """
 

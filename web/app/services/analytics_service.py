@@ -111,7 +111,7 @@ def _chart_tomatometer_over_time(reviews: list[dict]) -> dict:
         "layout": {
             "title": "Tomatometer Over Time",
             "xaxis": {"title": "Time"},
-            "yaxis": {"title": "Score (%)", "range": [0, 100]},
+            "yaxis": {"title": "Score (%)", "rangemode": "tozero"},
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
         },
     }

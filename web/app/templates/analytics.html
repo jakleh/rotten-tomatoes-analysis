@@ -19,7 +19,6 @@
                     hx-include="#chart-type"
                     hx-trigger="change"
                     hx-indicator="#chart-loading">
-                <option value="all" {% if selected_movie == "all" %}selected{% endif %}>All Movies</option>
                 {% for slug in movies %}
                 <option value="{{ slug }}" {% if selected_movie == slug %}selected{% endif %}>
                     {{ slug | replace("_", " ") | title }}

@@ -92,8 +92,8 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 
 ### Fully Implemented and Deployed
 - **`get_reviews(movie_slug, critic_filter, stop_at_unit)`** — Selenium scraper with early stopping. `stop_at_unit='h'` for hour window, `'d'` for day window. Returns list of review dicts.
-- **`scrape_hour_sliding_window(movie_slug)`** — Runs every 5 min via cron. Pre-checks review count via HTTP first; only launches Selenium if count changed.
-- **`scrape_day_sliding_window(movie_slug)`** — Runs every 6 hours via cron. Always does full scrape. Reconciles lagging reviews, exports reference CSV, calibrates pre-check state.
+- **`scrape_hour_sliding_window(movie_slug)`** — Runs every 5 min via cron. Pre-checks review count via HTTP first; only launches Selenium if count changed. Frequency ensures lagging reviews are caught within a short time horizon.
+- **`scrape_day_sliding_window(movie_slug)`** — Runs every 6 hours via cron. Always does full scrape. Reconciles lagging reviews missed by the hour window, exports reference CSV, calibrates pre-check state.
 - **SQLite layer** — `init_reviews_table` (single unified table with `movie_slug` column, schema versioning via `schema_version` table), `insert_review` (dedup via MD5 unique_review_id), `update_sentiment` (fills NULL tomatometer_sentiment only), `get_db_review_ids`, `get_db_reviews_sorted`, `export_reference_csv`
 - **Pre-check system** — `fetch_review_count()` hits main movie page (`/m/{slug}`) with `requests`, extracts count via regex `(\d+) Reviews`. `has_new_reviews()` compares against stored count in `precheck_state` table. Tracks consecutive failures; logs WARNING each time, ERROR after 10+. Falls back to full Selenium scrape on failure.
 - **Reconciliation** — `reconcile_missing_reviews()` groups consecutive missing reviews, interpolates timestamps from DB anchor neighbors. Only reconciles reviews with at least one DB anchor (no false reconciliation on first run/empty DB).
@@ -128,9 +128,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
   - `timing.py` — `reviews_per_bucket(bucket="day"|"hour")`, `cumulative_reviews()`, `avg_reviews_per_day()`
   - `critics.py` — `top_critic_split()`, `publication_counts(top_n=10)`
   - `scoring.py` — `score_distribution()`
-- **Analytics service** — `web/app/services/analytics_service.py` orchestrates DB → math → Plotly JSON specs with caching. 6 chart types: `tomatometer_over_time`, `review_volume`, `sentiment_breakdown`, `top_critic_comparison`, `cumulative_reviews`, `score_distribution`. Stats panel: tomatometer %, total reviews, positive/negative counts, top critic score, avg reviews/day.
+- **Analytics service** — `web/app/services/analytics_service.py` orchestrates DB → math → Plotly JSON specs with caching. 6 chart types: `tomatometer_over_time`, `review_volume`, `sentiment_breakdown`, `top_critic_comparison`, `cumulative_reviews`, `score_distribution`. Tomatometer chart uses `rangemode: "tozero"` for auto-scaled y-axis. Stats panel: tomatometer %, total reviews, positive/negative counts, top critic score, avg reviews/day.
 - **Analytics router** — `web/app/routers/analytics.py` with `GET /analytics` (full page), `GET /analytics/chart` (HTMX chart partial), `GET /analytics/calc` (HTMX stats partial)
-- **Analytics templates** — `analytics.html` (sidebar with movie dropdown + chart type selector + stats panel, main area with Plotly chart), `partials/chart.html` (inline Plotly.newPlot script), `partials/calculation.html` (stat grid cards)
+- **Analytics templates** — `analytics.html` (sidebar with per-movie dropdown + chart type selector + stats panel, main area with Plotly chart), `partials/chart.html` (inline Plotly.newPlot script), `partials/calculation.html` (stat grid cards). No "All Movies" option — analytics are per-movie only.
 - **HTMX interactions** — Movie dropdown triggers both chart and stats reload. Chart type dropdown triggers chart reload. Both use `hx-include` to pass sibling control values.
 - **56 new tests** (72 total) — covering cache (key building, get/set, expiry, clear), all four math modules (empty data, single review, mixed sentiment, edge cases), and analytics service (chart JSON validity for all 6 types, stats computation, movie filtering, caching)
 
@@ -144,7 +144,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 **Phase 4 complete (Report Page + PDF Generation):**
 - **Report service** — `web/app/services/report_service.py` collects all stats, tables, and chart data via `get_report_data()`. `generate_pdf()` renders a multi-page PDF using fpdf2 for layout and matplotlib (Agg backend) for chart images.
 - **Report router** — `web/app/routers/reports.py` with `GET /reports` (full page), `GET /reports/preview` (HTMX document preview partial), `GET /reports/download` (PDF binary response). Uses `asyncio.Semaphore(1)` to serialize PDF renders + `asyncio.to_thread()` to offload CPU-bound rendering.
-- **Report templates** — `reports.html` (controls bar with movie dropdown + download button, preview area), `partials/report_preview.html` (document-style HTML preview with stats table, 4 Plotly charts reused from analytics, publications table, score distribution table).
+- **Report templates** — `reports.html` (controls bar with per-movie dropdown + download button, preview area), `partials/report_preview.html` (document-style HTML preview with stats table, 4 Plotly charts reused from analytics, publications table, score distribution table). No "All Movies" option — reports are per-movie only.
 - **Memory safety** — Matplotlib figures closed immediately after saving to buffer; chart buffers closed after embedding in PDF (one at a time, not accumulated). Estimated peak: ~45MB additional over baseline (~118MB total, well under 200MB cap). Semaphore prevents concurrent renders.
 - **15 new tests** (87 total) — covering `get_report_data` (empty DB, with reviews, movie filter, caching, data structure) and `generate_pdf` (valid PDF bytes, empty DB, movie filter, edge cases).
 
@@ -188,11 +188,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 3. If count changed or pre-check failed → launch Selenium
 4. Scrape reviews with `stop_at_unit='h'` (only "m"-timestamped reviews)
 5. Insert new reviews (skip duplicates)
+6. High frequency ensures lagging reviews are caught within a short time horizon
 
 ### Day Sliding Window (every 6 hours)
 1. Always runs full Selenium scrape with `stop_at_unit='d'`
 2. Compare scraped reviews against DB
-3. Reconcile missing reviews (interpolate timestamps between DB anchors)
+3. Reconcile missing reviews that the hour window missed (interpolate timestamps between DB anchors)
 4. Export reference CSV
 5. Calibrate pre-check state with authoritative count
 
@@ -290,8 +291,12 @@ After completing any non-trivial task, walk through this checklist with the user
 
 ### Tech Backlog
 Track known improvements or deferred work here. Remove items as they're completed.
+Detailed context and implementation plans for items 1-4: `.claude/backlog-context.md`
 
-- Extract `parse_review_cards(html)` from `get_reviews()` for unit-testable parsing logic
+1. Add timestamp filter to reviews page (`after` date picker, `WHERE timestamp > ?`)
+2. Normalize subjective scores into a 0-1 scale; replace raw count chart with "fresh review strength distribution"
+3. Replace `reconciled_timestamp` boolean with `timestamp_confidence` column ("exact", "hour", "day", "interpolated", "backfill") — includes migration + backfill identification
+4. Extract `parse_review_cards(html)` from `get_reviews()` + add mocked HTTP boundary tests
 - Security test suite: SQL injection, XSS, and parsing robustness tests with adversarial inputs
 
 ## Security Decisions & Tradeoffs
