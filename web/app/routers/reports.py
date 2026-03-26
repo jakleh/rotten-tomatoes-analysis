@@ -19,7 +19,6 @@ _render_semaphore = asyncio.Semaphore(1)
 _PREVIEW_CHARTS = [
     ("tomatometer_over_time", "Tomatometer Over Time"),
     ("review_volume", "Review Volume"),
-    ("sentiment_breakdown", "Sentiment Breakdown"),
     ("cumulative_reviews", "Cumulative Reviews"),
 ]
 

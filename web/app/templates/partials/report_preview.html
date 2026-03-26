@@ -79,27 +79,6 @@
     </div>
     {% endif %}
 
-    {% if data.score_distribution %}
-    <div class="report-section">
-        <h3>Score Distribution</h3>
-        <table class="report-table">
-            <thead>
-                <tr>
-                    <th>Score</th>
-                    <th>Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in data.score_distribution[:15] %}
-                <tr>
-                    <td>{{ item.score }}</td>
-                    <td>{{ item.count }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
 </div>
 
 <script>

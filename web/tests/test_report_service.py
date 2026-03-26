@@ -65,7 +65,6 @@ class TestGetReportData:
         assert data["positive"] == 0
         assert data["negative"] == 0
         assert data["publications"] == []
-        assert data["score_distribution"] == []
 
     def test_with_reviews(self):
         conn = _make_conn()

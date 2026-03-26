@@ -62,9 +62,9 @@ A web dashboard for browsing and analyzing scraped review data. Built with FastA
 
 **Features:**
 - Paginated review table with movie filtering and date filtering (show reviews after a given date)
-- Per-movie analytics charts: Tomatometer over time (auto-scaled), review volume, sentiment breakdown, top critic comparison, cumulative reviews, score distribution
+- Per-movie analytics charts: Tomatometer over time (auto-scaled), review volume, top critic comparison, cumulative reviews
 - Stats panel: current Tomatometer %, total reviews, positive/negative counts, top critic score, average reviews per day
-- PDF reports: document preview with interactive charts, downloadable PDF with summary stats, matplotlib charts, and publication/score tables
+- PDF reports: document preview with interactive charts, downloadable PDF with summary stats, matplotlib charts, and publication table
 
 **Access** (via SSH tunnel — dashboard binds to `127.0.0.1:8000`):
 ```bash

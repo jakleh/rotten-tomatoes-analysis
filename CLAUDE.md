@@ -38,7 +38,6 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 │   │   │   ├── sentiment.py   # Tomatometer over time, sentiment counts, current score
 │   │   │   ├── timing.py      # Reviews per bucket, cumulative count, avg per day
 │   │   │   ├── critics.py     # Top critic vs regular split, publication counts
-│   │   │   └── scoring.py     # Score distribution histogram
 │   │   ├── templates/
 │   │   │   ├── base.html      # Shared layout (nav, HTMX/Plotly CDN)
 │   │   │   ├── reviews.html   # Reviews page
@@ -52,7 +51,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 │   │   └── static/
 │   │       ├── style.css      # Full styling (nav, table, analytics, reports, stats grid)
 │   │       └── app.js         # Minimal JS (Plotly resize hook)
-│   ├── tests/                 # 87 tests (review service, cache, math, analytics, reports)
+│   ├── tests/                 # 88 tests (review service, cache, math, analytics, reports)
 │   └── deploy/
 │       └── rt-dashboard.service  # systemd unit for dashboard
 ├── .github/
@@ -128,12 +127,11 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
   - `sentiment.py` — `sentiment_counts()`, `current_tomatometer()`, `tomatometer_over_time()`
   - `timing.py` — `reviews_per_bucket(bucket="day"|"hour")`, `cumulative_reviews()`, `avg_reviews_per_day()`
   - `critics.py` — `top_critic_split()`, `publication_counts(top_n=10)`
-  - `scoring.py` — `score_distribution()`
-- **Analytics service** — `web/app/services/analytics_service.py` orchestrates DB → math → Plotly JSON specs with caching. 6 chart types: `tomatometer_over_time`, `review_volume`, `sentiment_breakdown`, `top_critic_comparison`, `cumulative_reviews`, `score_distribution`. Tomatometer chart y-axis is computed from data with 5-point padding, clamped to [0, 100]. Stats panel: tomatometer %, total reviews, positive/negative counts, top critic score, avg reviews/day.
+- **Analytics service** — `web/app/services/analytics_service.py` orchestrates DB → math → Plotly JSON specs with caching. 4 chart types: `tomatometer_over_time`, `review_volume`, `top_critic_comparison`, `cumulative_reviews`. Tomatometer chart y-axis is computed from data with 5-point padding, clamped to [0, 100]. Stats panel: tomatometer %, total reviews, positive/negative counts, top critic score, avg reviews/day.
 - **Analytics router** — `web/app/routers/analytics.py` with `GET /analytics` (full page), `GET /analytics/chart` (HTMX chart partial), `GET /analytics/calc` (HTMX stats partial)
 - **Analytics templates** — `analytics.html` (sidebar with per-movie dropdown + chart type selector + stats panel, main area with Plotly chart), `partials/chart.html` (inline Plotly.newPlot script), `partials/calculation.html` (stat grid cards). No "All Movies" option — analytics are per-movie only.
 - **HTMX interactions** — Movie dropdown triggers both chart and stats reload. Chart type dropdown triggers chart reload. Both use `hx-include` to pass sibling control values.
-- **56 new tests** (72 total) — covering cache (key building, get/set, expiry, clear), all four math modules (empty data, single review, mixed sentiment, edge cases), and analytics service (chart JSON validity for all 6 types, stats computation, movie filtering, caching)
+- **56 new tests** (72 total) — covering cache (key building, get/set, expiry, clear), all math modules (empty data, single review, mixed sentiment, edge cases), and analytics service (chart JSON validity for all types, stats computation, movie filtering, caching)
 
 **Phase 3 complete (VM Deployment):**
 - **systemd service** — `web/deploy/rt-dashboard.service` runs uvicorn as `jakelehner` user, binds to `127.0.0.1:8000`, single worker, memory-limited (`MemoryHigh=150M`, `MemoryMax=200M`)
@@ -145,7 +143,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 **Phase 4 complete (Report Page + PDF Generation):**
 - **Report service** — `web/app/services/report_service.py` collects all stats, tables, and chart data via `get_report_data()`. `generate_pdf()` renders a multi-page PDF using fpdf2 for layout and matplotlib (Agg backend) for chart images.
 - **Report router** — `web/app/routers/reports.py` with `GET /reports` (full page), `GET /reports/preview` (HTMX document preview partial), `GET /reports/download` (PDF binary response). Uses `asyncio.Semaphore(1)` to serialize PDF renders + `asyncio.to_thread()` to offload CPU-bound rendering.
-- **Report templates** — `reports.html` (controls bar with per-movie dropdown + download button, preview area), `partials/report_preview.html` (document-style HTML preview with stats table, 4 Plotly charts reused from analytics, publications table, score distribution table). No "All Movies" option — reports are per-movie only.
+- **Report templates** — `reports.html` (controls bar with per-movie dropdown + download button, preview area), `partials/report_preview.html` (document-style HTML preview with stats table, 3 Plotly charts reused from analytics, publications table). No "All Movies" option — reports are per-movie only.
 - **Memory safety** — Matplotlib figures closed immediately after saving to buffer; chart buffers closed after embedding in PDF (one at a time, not accumulated). Estimated peak: ~45MB additional over baseline (~118MB total, well under 200MB cap). Semaphore prevents concurrent renders.
 - **15 new tests** (92 total with timestamp filter tests) — covering `get_report_data` (empty DB, with reviews, movie filter, caching, data structure) and `generate_pdf` (valid PDF bytes, empty DB, movie filter, edge cases).
 
@@ -294,7 +292,7 @@ After completing any non-trivial task, walk through this checklist with the user
 Track known improvements or deferred work here. Remove items as they're completed.
 Detailed context and implementation plans: `.claude/backlog-context.md`
 
-1. Normalize subjective scores into a 0-1 scale; replace raw count chart with "fresh review strength distribution"
+1. Normalize subjective scores into a 0-1 scale; add "fresh review strength distribution" chart
 2. Extract `parse_review_cards(html)` from `get_reviews()` + add mocked HTTP boundary tests
 - Security test suite: SQL injection, XSS, and parsing robustness tests with adversarial inputs
 

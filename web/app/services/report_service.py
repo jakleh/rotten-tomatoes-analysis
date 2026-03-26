@@ -13,7 +13,6 @@ from fpdf.enums import XPos, YPos
 
 from app.cache import cache_get, cache_set, make_key
 from app.math.critics import publication_counts, top_critic_split
-from app.math.scoring import score_distribution
 from app.math.sentiment import (
     current_tomatometer,
     sentiment_counts,
@@ -52,7 +51,6 @@ def get_report_data(conn: sqlite3.Connection, movie: str) -> dict:
     volume = reviews_per_bucket(reviews, bucket="day")
     tomato_points = tomatometer_over_time(reviews)
     cumul = cumulative_reviews(reviews)
-    dist = score_distribution(reviews)
 
     data = {
         "movie": movie,
@@ -74,7 +72,6 @@ def get_report_data(conn: sqlite3.Connection, movie: str) -> dict:
         "volume": volume,
         "tomatometer_points": tomato_points,
         "cumulative": cumul,
-        "score_distribution": dist,
     }
     cache_set(key, data)
     return data
@@ -133,32 +130,6 @@ def _render_volume_chart(volume: list[dict]) -> io.BytesIO:
             ax.set_xticklabels(buckets, rotation=45, ha="right", fontsize=7)
     ax.set_title("Reviews Per Day", fontsize=10)
     ax.grid(axis="y", alpha=0.3)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-
-def _render_sentiment_chart(positive: int, negative: int, unknown: int) -> io.BytesIO:
-    fig, ax = plt.subplots(figsize=(5, 3))
-    labels, sizes, colors = [], [], []
-    for label, count, color in [
-        ("Positive", positive, "#4caf50"),
-        ("Negative", negative, "#e53935"),
-        ("Unknown", unknown, "#9e9e9e"),
-    ]:
-        if count > 0:
-            labels.append(label)
-            sizes.append(count)
-            colors.append(color)
-    if sizes:
-        ax.pie(
-            sizes, labels=labels, colors=colors,
-            autopct="%1.0f%%", startangle=90,
-            wedgeprops={"width": 0.6},
-        )
-    ax.set_title("Sentiment Breakdown", fontsize=10)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -275,11 +246,6 @@ def generate_pdf(conn: sqlite3.Connection, movie: str) -> bytes:
 
     pdf.add_page()
 
-    buf = _render_sentiment_chart(data["positive"], data["negative"], data["unknown"])
-    pdf.image(buf, x=35, w=140)
-    buf.close()
-    pdf.ln(4)
-
     buf = _render_cumulative_chart(data["cumulative"])
     pdf.image(buf, x=10, w=190)
     buf.close()
@@ -300,22 +266,5 @@ def generate_pdf(conn: sqlite3.Connection, movie: str) -> bytes:
         for pub in data["publications"]:
             pdf.cell(130, 8, pub["publication"][:50], border=1)
             pdf.cell(40, 8, str(pub["count"]), border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-    # --- Score distribution table ---
-    if data["score_distribution"]:
-        pdf.ln(10)
-        pdf.set_font("Helvetica", "B", 16)
-        pdf.cell(0, 10, "Score Distribution", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(4)
-
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.set_fill_color(250, 250, 250)
-        pdf.cell(100, 8, "Score", border=1, fill=True)
-        pdf.cell(40, 8, "Count", border=1, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-        pdf.set_font("Helvetica", "", 10)
-        for item in data["score_distribution"][:15]:
-            pdf.cell(100, 8, str(item["score"])[:30], border=1)
-            pdf.cell(40, 8, str(item["count"]), border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     return bytes(pdf.output())

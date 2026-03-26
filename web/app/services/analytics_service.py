@@ -11,16 +11,13 @@ from app.math.sentiment import (
 )
 from app.math.timing import avg_reviews_per_day, cumulative_reviews, reviews_per_bucket
 from app.math.critics import publication_counts, top_critic_split
-from app.math.scoring import score_distribution
 
 # Available chart types — order matches the dropdown
 CHART_TYPES = [
     ("tomatometer_over_time", "Tomatometer Over Time"),
     ("review_volume", "Review Volume (per day)"),
-    ("sentiment_breakdown", "Sentiment Breakdown"),
     ("top_critic_comparison", "Top Critic vs Regular"),
     ("cumulative_reviews", "Cumulative Reviews"),
-    ("score_distribution", "Score Distribution"),
 ]
 
 
@@ -88,10 +85,8 @@ def _build_chart_spec(reviews: list[dict], chart: str) -> dict:
     builders = {
         "tomatometer_over_time": _chart_tomatometer_over_time,
         "review_volume": _chart_review_volume,
-        "sentiment_breakdown": _chart_sentiment_breakdown,
         "top_critic_comparison": _chart_top_critic_comparison,
         "cumulative_reviews": _chart_cumulative_reviews,
-        "score_distribution": _chart_score_distribution,
     }
     builder = builders.get(chart, _chart_tomatometer_over_time)
     return builder(reviews)
@@ -138,32 +133,6 @@ def _chart_review_volume(reviews: list[dict]) -> dict:
             "xaxis": {"title": "Date"},
             "yaxis": {"title": "Count"},
             "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
-        },
-    }
-
-
-def _chart_sentiment_breakdown(reviews: list[dict]) -> dict:
-    counts = sentiment_counts(reviews)
-    labels = []
-    values = []
-    colors = []
-    for label, color in [("Positive", "#4caf50"), ("Negative", "#e53935"), ("Unknown", "#9e9e9e")]:
-        key = label.lower()
-        if counts[key] > 0:
-            labels.append(label)
-            values.append(counts[key])
-            colors.append(color)
-    return {
-        "data": [{
-            "labels": labels,
-            "values": values,
-            "type": "pie",
-            "marker": {"colors": colors},
-            "hole": 0.4,
-        }],
-        "layout": {
-            "title": "Sentiment Breakdown",
-            "margin": {"t": 40, "r": 20, "b": 20, "l": 20},
         },
     }
 
@@ -224,20 +193,3 @@ def _chart_cumulative_reviews(reviews: list[dict]) -> dict:
     }
 
 
-def _chart_score_distribution(reviews: list[dict]) -> dict:
-    dist = score_distribution(reviews)
-    return {
-        "data": [{
-            "x": [d["score"] for d in dist],
-            "y": [d["count"] for d in dist],
-            "type": "bar",
-            "name": "Count",
-            "marker": {"color": "#ff9800"},
-        }],
-        "layout": {
-            "title": "Score Distribution",
-            "xaxis": {"title": "Score", "type": "category"},
-            "yaxis": {"title": "Count"},
-            "margin": {"t": 40, "r": 20, "b": 50, "l": 50},
-        },
-    }
