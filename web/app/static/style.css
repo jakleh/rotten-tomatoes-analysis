@@ -69,12 +69,25 @@ body {
     font-weight: 600;
 }
 
-.controls select {
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.controls select,
+.controls input[type="date"] {
     padding: 0.4rem 0.75rem;
     border: 1px solid #ccc;
     border-radius: 4px;
     font-size: 0.9rem;
     background: #fff;
+}
+
+.date-filter-label {
+    font-size: 0.85rem;
+    color: #666;
+    white-space: nowrap;
 }
 
 /* === Table === */

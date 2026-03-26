@@ -173,3 +173,49 @@ class TestGetReviewsPage:
         result = get_reviews_page(conn, page=-5)
         assert result.page == 1
         assert len(result.reviews) == 1
+
+    def test_after_filter(self):
+        conn = _make_conn()
+        _insert_review(conn, unique_review_id="old", timestamp="2026-01-01 12:00:00")
+        _insert_review(conn, unique_review_id="new", timestamp="2026-01-10 12:00:00")
+        result = get_reviews_page(conn, after="2026-01-05")
+        assert result.total == 1
+        assert result.reviews[0]["unique_review_id"] == "new"
+
+    def test_after_filter_none(self):
+        conn = _make_conn()
+        _insert_review(conn, unique_review_id="a", timestamp="2026-01-01 12:00:00")
+        _insert_review(conn, unique_review_id="b", timestamp="2026-01-10 12:00:00")
+        result = get_reviews_page(conn, after=None)
+        assert result.total == 2
+
+    def test_after_filter_with_movie(self):
+        conn = _make_conn()
+        _insert_review(conn, movie_slug="movie_a", unique_review_id="a1", timestamp="2026-01-01 12:00:00")
+        _insert_review(conn, movie_slug="movie_a", unique_review_id="a2", timestamp="2026-01-10 12:00:00")
+        _insert_review(conn, movie_slug="movie_b", unique_review_id="b1", timestamp="2026-01-10 12:00:00")
+        result = get_reviews_page(conn, movie="movie_a", after="2026-01-05")
+        assert result.total == 1
+        assert result.reviews[0]["movie_slug"] == "movie_a"
+        assert result.reviews[0]["unique_review_id"] == "a2"
+
+    def test_after_filter_excludes_all(self):
+        conn = _make_conn()
+        _insert_review(conn, unique_review_id="old", timestamp="2026-01-01 12:00:00")
+        result = get_reviews_page(conn, after="2026-12-31")
+        assert result.total == 0
+        assert result.reviews == []
+
+    def test_after_filter_pagination(self):
+        conn = _make_conn()
+        for i in range(15):
+            _insert_review(
+                conn,
+                unique_review_id=f"id_{i}",
+                timestamp=f"2026-01-{i + 10:02d} 12:00:00",
+            )
+        # "2026-01-14 12:00:00" > "2026-01-14" in string comparison, so 11 match
+        result = get_reviews_page(conn, after="2026-01-14", page=1, per_page=5)
+        assert result.total == 11
+        assert len(result.reviews) == 5
+        assert result.has_next is True

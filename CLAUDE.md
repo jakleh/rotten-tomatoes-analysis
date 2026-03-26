@@ -116,10 +116,10 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **FastAPI app** — `web/app/main.py` with Jinja2 templates, static file serving, HTMX partials
 - **Config** — `web/app/config.py` reads DB_PATH, HOST, PORT, MOVIES_JSON_PATH from env vars with defaults
 - **DB layer** — `web/app/db.py` provides read-only SQLite connections as FastAPI dependencies, loads movie slugs from `movies.json`
-- **Review service** — `web/app/services/review_service.py` with paginated queries (newest-first, movie filter, page size clamping)
-- **Reviews page** — Full page at `/reviews`, HTMX partial at `/reviews/table` for arrow-click pagination without scrolling
+- **Review service** — `web/app/services/review_service.py` with paginated queries (newest-first, movie filter, date filter, page size clamping)
+- **Reviews page** — Full page at `/reviews`, HTMX partial at `/reviews/table` for arrow-click pagination without scrolling. Controls: movie dropdown + "after" date picker, both wired with HTMX `hx-include` to pass sibling filter values.
 - **Templates** — `base.html` (shared nav + HTMX/Plotly.js CDN), `reviews.html`, `partials/review_table.html`
-- **16 tests** — covering ReviewPage dataclass, paginated queries, movie filtering, edge cases
+- **21 tests** — covering ReviewPage dataclass, paginated queries, movie filtering, date filtering, edge cases
 
 **Phase 2 complete (Math Layer + Analytics Dashboard):**
 - **Cache** — `web/app/cache.py` in-memory TTL cache (60s default), keyed by `(func_name, movie, frozen_params)`. Functions: `cache_get`, `cache_set`, `cache_clear`, `make_key`.
@@ -146,7 +146,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **Report router** — `web/app/routers/reports.py` with `GET /reports` (full page), `GET /reports/preview` (HTMX document preview partial), `GET /reports/download` (PDF binary response). Uses `asyncio.Semaphore(1)` to serialize PDF renders + `asyncio.to_thread()` to offload CPU-bound rendering.
 - **Report templates** — `reports.html` (controls bar with per-movie dropdown + download button, preview area), `partials/report_preview.html` (document-style HTML preview with stats table, 4 Plotly charts reused from analytics, publications table, score distribution table). No "All Movies" option — reports are per-movie only.
 - **Memory safety** — Matplotlib figures closed immediately after saving to buffer; chart buffers closed after embedding in PDF (one at a time, not accumulated). Estimated peak: ~45MB additional over baseline (~118MB total, well under 200MB cap). Semaphore prevents concurrent renders.
-- **15 new tests** (87 total) — covering `get_report_data` (empty DB, with reviews, movie filter, caching, data structure) and `generate_pdf` (valid PDF bytes, empty DB, movie filter, edge cases).
+- **15 new tests** (92 total with timestamp filter tests) — covering `get_report_data` (empty DB, with reviews, movie filter, caching, data structure) and `generate_pdf` (valid PDF bytes, empty DB, movie filter, edge cases).
 
 ## Database Schema
 
@@ -291,12 +291,11 @@ After completing any non-trivial task, walk through this checklist with the user
 
 ### Tech Backlog
 Track known improvements or deferred work here. Remove items as they're completed.
-Detailed context and implementation plans for items 1-4: `.claude/backlog-context.md`
+Detailed context and implementation plans: `.claude/backlog-context.md`
 
-1. Add timestamp filter to reviews page (`after` date picker, `WHERE timestamp > ?`)
-2. Normalize subjective scores into a 0-1 scale; replace raw count chart with "fresh review strength distribution"
-3. Replace `reconciled_timestamp` boolean with `timestamp_confidence` column ("exact", "hour", "day", "interpolated", "backfill") — includes migration + backfill identification
-4. Extract `parse_review_cards(html)` from `get_reviews()` + add mocked HTTP boundary tests
+1. Normalize subjective scores into a 0-1 scale; replace raw count chart with "fresh review strength distribution"
+2. Replace `reconciled_timestamp` boolean with `timestamp_confidence` column ("exact", "hour", "day", "interpolated", "backfill") — includes migration + backfill identification
+3. Extract `parse_review_cards(html)` from `get_reviews()` + add mocked HTTP boundary tests
 - Security test suite: SQL injection, XSS, and parsing robustness tests with adversarial inputs
 
 ## Security Decisions & Tradeoffs

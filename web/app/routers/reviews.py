@@ -19,9 +19,11 @@ async def reviews_page(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     movie: str = Query("all"),
+    after: str = Query(""),
 ):
     """Full reviews page (initial load)."""
-    result = get_reviews_page(conn, page=page, per_page=per_page, movie=movie)
+    after_val = after if after else None
+    result = get_reviews_page(conn, page=page, per_page=per_page, movie=movie, after=after_val)
     movies = load_movie_slugs()
     return templates.TemplateResponse(
         request,
@@ -30,6 +32,7 @@ async def reviews_page(
             "result": result,
             "movies": movies,
             "selected_movie": movie,
+            "selected_after": after,
         },
     )
 
@@ -41,14 +44,17 @@ async def reviews_table(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     movie: str = Query("all"),
+    after: str = Query(""),
 ):
     """HTMX partial: just the table body + pagination controls."""
-    result = get_reviews_page(conn, page=page, per_page=per_page, movie=movie)
+    after_val = after if after else None
+    result = get_reviews_page(conn, page=page, per_page=per_page, movie=movie, after=after_val)
     return templates.TemplateResponse(
         request,
         "partials/review_table.html",
         {
             "result": result,
             "selected_movie": movie,
+            "selected_after": after,
         },
     )

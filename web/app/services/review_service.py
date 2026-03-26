@@ -33,29 +33,34 @@ def get_reviews_page(
     page: int = 1,
     per_page: int = 25,
     movie: str | None = None,
+    after: str | None = None,
 ) -> ReviewPage:
     """Return a paginated slice of reviews, newest first."""
     page = max(1, page)
     per_page = max(1, min(per_page, 100))
 
+    where_clauses: list[str] = []
+    params: list[str | int] = []
+
     if movie and movie != "all":
-        count_row = conn.execute(
-            "SELECT COUNT(*) FROM reviews WHERE movie_slug = ?", (movie,)
-        ).fetchone()
-        total = count_row[0]
+        where_clauses.append("movie_slug = ?")
+        params.append(movie)
 
-        rows = conn.execute(
-            "SELECT * FROM reviews WHERE movie_slug = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (movie, per_page, (page - 1) * per_page),
-        ).fetchall()
-    else:
-        count_row = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()
-        total = count_row[0]
+    if after:
+        where_clauses.append("timestamp > ?")
+        params.append(after)
 
-        rows = conn.execute(
-            "SELECT * FROM reviews ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (per_page, (page - 1) * per_page),
-        ).fetchall()
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    count_row = conn.execute(
+        f"SELECT COUNT(*) FROM reviews{where_sql}", params
+    ).fetchone()
+    total = count_row[0]
+
+    rows = conn.execute(
+        f"SELECT * FROM reviews{where_sql} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+        [*params, per_page, (page - 1) * per_page],
+    ).fetchall()
 
     reviews = [dict(row) for row in rows]
     return ReviewPage(reviews=reviews, page=page, per_page=per_page, total=total)

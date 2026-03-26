@@ -50,7 +50,7 @@
     <div class="pagination-controls">
         <button class="page-arrow {% if not result.has_prev %}disabled{% endif %}"
                 {% if result.has_prev %}
-                hx-get="/reviews/table?page={{ result.page - 1 }}&per_page={{ result.per_page }}&movie={{ selected_movie }}"
+                hx-get="/reviews/table?page={{ result.page - 1 }}&per_page={{ result.per_page }}&movie={{ selected_movie }}&after={{ selected_after or '' }}"
                 hx-target="#review-table-container"
                 {% else %}
                 disabled
@@ -59,7 +59,7 @@
         </button>
         <button class="page-arrow {% if not result.has_next %}disabled{% endif %}"
                 {% if result.has_next %}
-                hx-get="/reviews/table?page={{ result.page + 1 }}&per_page={{ result.per_page }}&movie={{ selected_movie }}"
+                hx-get="/reviews/table?page={{ result.page + 1 }}&per_page={{ result.per_page }}&movie={{ selected_movie }}&after={{ selected_after or '' }}"
                 hx-target="#review-table-container"
                 {% else %}
                 disabled

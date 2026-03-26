@@ -10,9 +10,10 @@
         <select id="movie-filter"
                 hx-get="/reviews/table"
                 hx-target="#review-table-container"
-                hx-include="#movie-filter"
+                hx-include=".review-filter"
                 hx-trigger="change"
-                name="movie">
+                name="movie"
+                class="review-filter">
             <option value="all" {% if selected_movie == "all" %}selected{% endif %}>All Movies</option>
             {% for slug in movies %}
             <option value="{{ slug }}" {% if selected_movie == slug %}selected{% endif %}>
@@ -20,6 +21,16 @@
             </option>
             {% endfor %}
         </select>
+        <label class="date-filter-label" for="after-filter">After:</label>
+        <input type="date"
+               id="after-filter"
+               name="after"
+               class="review-filter"
+               value="{{ selected_after or '' }}"
+               hx-get="/reviews/table"
+               hx-target="#review-table-container"
+               hx-include=".review-filter"
+               hx-trigger="change">
     </div>
 </div>
 
