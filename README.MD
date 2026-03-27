@@ -70,7 +70,7 @@ ssh -L 8001:127.0.0.1:8001 jakelehner@<vm-ip>
 
 **Local development:**
 ```bash
-uv run datasette reviews.db -i --metadata metadata.yml
+uv run datasette --immutable reviews.db --metadata metadata.yml
 ```
 
 ## Setup

@@ -152,7 +152,7 @@ uv run --group dev pytest tests/ -v
 
 # === Datasette ===
 # Start locally (read-only, immutable mode)
-uv run datasette reviews.db -i --metadata metadata.yml
+uv run datasette --immutable reviews.db --metadata metadata.yml
 ```
 
 ## GCP VM Details
@@ -219,6 +219,6 @@ Detailed context and implementation plans: `.claude/backlog-context.md`
 Running log of security-relevant choices and their rationale.
 
 - **Datasette binds to `127.0.0.1:8001`**: Not exposed to the internet. Access is SSH-tunnel-only, so there's no public attack surface. The SSH tunnel itself is the access control.
-- **Datasette runs with `--immutable` flag**: Opens the database in immutable/read-only mode. No writes possible through the web interface.
+- **Datasette runs with `--immutable` flag**: Opens the database in read-only mode. No writes possible through the web interface.
 - **`MemoryMax=150M` on Datasette service**: Hard OOM kill boundary prevents a runaway Datasette process from starving the scraper (which needs 500-800MB for Selenium/Chrome). Trades Datasette availability for system stability.
 - **CI/CD uses passwordless sudo for `systemctl restart`**: Relies on GCP Compute Engine's default sudoers config (`/etc/sudoers.d/google_sudoers`) granting the primary SSH user full passwordless sudo. Acceptable because the VM is single-purpose and single-user.
