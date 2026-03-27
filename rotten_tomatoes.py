@@ -187,7 +187,9 @@ def init_reviews_table(conn: sqlite3.Connection) -> None:
             timestamp_confidence  TEXT NOT NULL DEFAULT 'd',
             reviewer_name         TEXT,
             publication_name      TEXT,
-            top_critic            INTEGER NOT NULL DEFAULT 0
+            top_critic            INTEGER NOT NULL DEFAULT 0,
+            scraped_at            TEXT NOT NULL DEFAULT '',
+            raw_timestamp_text    TEXT NOT NULL DEFAULT ''
         )
     """)
     # Migration: add tomatometer_sentiment to existing tables that lack it.
@@ -214,6 +216,11 @@ def init_reviews_table(conn: sqlite3.Connection) -> None:
     if current_version < 2:
         _migrate_v2_timestamp_confidence(conn)
         conn.execute("UPDATE schema_version SET version = 2")
+        conn.commit()
+
+    if current_version < 3:
+        _migrate_v3_provenance_columns(conn)
+        conn.execute("UPDATE schema_version SET version = 3")
         conn.commit()
 
     conn.commit()
@@ -250,6 +257,22 @@ def _migrate_v2_timestamp_confidence(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reviews DROP COLUMN reconciled_timestamp")
     conn.commit()
     log.info("Migrated reviews table: replaced reconciled_timestamp with timestamp_confidence.")
+
+
+def _migrate_v3_provenance_columns(conn: sqlite3.Connection) -> None:
+    """Add scraped_at and raw_timestamp_text columns plus performance indexes."""
+    try:
+        conn.execute("ALTER TABLE reviews ADD COLUMN scraped_at TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE reviews ADD COLUMN raw_timestamp_text TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_movie_slug ON reviews(movie_slug)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_movie_timestamp ON reviews(movie_slug, timestamp)")
+    conn.commit()
+    log.info("Migrated reviews table: added scraped_at, raw_timestamp_text columns and indexes.")
 
 
 def init_precheck_table(conn: sqlite3.Connection) -> None:
@@ -325,8 +348,8 @@ def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bo
             INSERT INTO reviews
                 (movie_slug, timestamp, unique_review_id, subjective_score,
                  tomatometer_sentiment, timestamp_confidence, reviewer_name,
-                 publication_name, top_critic)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 publication_name, top_critic, scraped_at, raw_timestamp_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 movie_slug,
@@ -338,6 +361,8 @@ def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bo
                 review.get("reviewer_name"),
                 review.get("publication_name"),
                 int(bool(review.get("top_critic", False))),
+                review.get("scraped_at", ""),
+                review.get("raw_timestamp_text", ""),
             ),
         )
         conn.commit()
@@ -387,7 +412,7 @@ def export_reference_csv(conn: sqlite3.Connection, movie_slug: str, critic_filte
     fieldnames = [
         "id", "movie_slug", "timestamp", "unique_review_id", "subjective_score",
         "tomatometer_sentiment", "timestamp_confidence", "reviewer_name",
-        "publication_name", "top_critic",
+        "publication_name", "top_critic", "scraped_at", "raw_timestamp_text",
     ]
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -637,6 +662,8 @@ def get_reviews(
             "publication_name": publication,
             "top_critic": top_critic,
             "timestamp_confidence": confidence,
+            "scraped_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "raw_timestamp_text": rel_ts,
         })
 
     if skipped_timestamps and not reviews:
@@ -744,6 +771,7 @@ def reconcile_missing_reviews(
             reconciled = dict(review)
             reconciled["timestamp"] = ts
             reconciled["timestamp_confidence"] = "d"
+            reconciled["scraped_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
             if insert_review(conn, movie_slug, reconciled):
                 reconciled_count += 1

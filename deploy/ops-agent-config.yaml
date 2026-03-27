@@ -1,4 +1,4 @@
-# Ops Agent config — ships scraper and dashboard logs to Cloud Logging.
+# Ops Agent config — ships scraper and Datasette logs to Cloud Logging.
 # Installed to /etc/google-cloud-ops-agent/config.yaml by setup_vm.sh.
 
 logging:
@@ -11,16 +11,16 @@ logging:
       type: files
       include_paths:
         - /home/jakelehner/rotten-tomatoes-analysis/cron.log
-    dashboard_log:
+    datasette_log:
       type: files
       include_paths:
-        - /home/jakelehner/rotten-tomatoes-analysis/dashboard.log
+        - /home/jakelehner/rotten-tomatoes-analysis/datasette.log
   service:
     pipelines:
       rt_scraper:
         receivers:
           - scraper_log
           - cron_log
-      rt_dashboard:
+      rt_datasette:
         receivers:
-          - dashboard_log
+          - datasette_log

@@ -1,0 +1,96 @@
+title: Rotten Tomatoes Review Database
+description: Time-series database of Rotten Tomatoes movie reviews, built by an automated scraper.
+
+databases:
+  reviews:
+    tables:
+      reviews:
+        description: Individual movie reviews scraped from Rotten Tomatoes, with timestamps and sentiment.
+        facets:
+          - movie_slug
+          - tomatometer_sentiment
+          - top_critic
+          - timestamp_confidence
+        sort_desc: timestamp
+        columns:
+          id: Auto-increment primary key
+          movie_slug: "Movie identifier (matches RT URL path, e.g. project_hail_mary)"
+          timestamp: UTC datetime of the review (minute/hour/day precision depending on timestamp_confidence)
+          unique_review_id: MD5 hash of (movie_slug + reviewer + publication + rating) for deduplication
+          subjective_score: "Critic's score (e.g. 3/5, A-, 8/10)"
+          tomatometer_sentiment: "Tomatometer verdict: positive or negative"
+          timestamp_confidence: "Timestamp granularity: m (minute), h (hour), d (day/interpolated)"
+          reviewer_name: Name of the critic
+          publication_name: Name of the publication
+          top_critic: 1 if the critic is a Rotten Tomatoes Top Critic
+          scraped_at: UTC datetime when this review was first captured by the scraper
+          raw_timestamp_text: "Original relative timestamp from RT (e.g. 5m, 3h, Mar 20)"
+      precheck_state:
+        description: Tracks review counts for the HTTP pre-check optimization (skip Selenium when count unchanged).
+        hidden: true
+      schema_version:
+        description: Schema migration version tracker.
+        hidden: true
+    queries:
+      tomatometer_over_time:
+        title: Tomatometer Over Time
+        description: Running Tomatometer percentage by date for a given movie.
+        sql: |
+          SELECT
+            date(timestamp) as review_date,
+            COUNT(*) as total_reviews,
+            SUM(CASE WHEN tomatometer_sentiment = 'positive' THEN 1 ELSE 0 END) as positive,
+            ROUND(100.0 * SUM(CASE WHEN tomatometer_sentiment = 'positive' THEN 1 ELSE 0 END) / COUNT(*), 1) as tomatometer_pct
+          FROM reviews
+          WHERE movie_slug = :movie_slug
+            AND tomatometer_sentiment IS NOT NULL
+          GROUP BY review_date
+          ORDER BY review_date
+      review_volume_by_day:
+        title: Review Volume by Day
+        description: Number of reviews posted per day for a given movie.
+        sql: |
+          SELECT
+            date(timestamp) as review_date,
+            COUNT(*) as review_count
+          FROM reviews
+          WHERE movie_slug = :movie_slug
+          GROUP BY review_date
+          ORDER BY review_date
+      sentiment_breakdown:
+        title: Sentiment Breakdown
+        description: Positive vs negative review counts for a given movie.
+        sql: |
+          SELECT
+            tomatometer_sentiment,
+            COUNT(*) as count
+          FROM reviews
+          WHERE movie_slug = :movie_slug
+            AND tomatometer_sentiment IS NOT NULL
+          GROUP BY tomatometer_sentiment
+      top_critic_split:
+        title: Top Critic vs All Critics
+        description: Compare sentiment between top critics and regular critics.
+        sql: |
+          SELECT
+            CASE WHEN top_critic = 1 THEN 'Top Critic' ELSE 'Regular' END as critic_type,
+            tomatometer_sentiment,
+            COUNT(*) as count
+          FROM reviews
+          WHERE movie_slug = :movie_slug
+            AND tomatometer_sentiment IS NOT NULL
+          GROUP BY critic_type, tomatometer_sentiment
+      publication_counts:
+        title: Reviews by Publication
+        description: Top publications by review count for a given movie.
+        sql: |
+          SELECT
+            publication_name,
+            COUNT(*) as review_count,
+            ROUND(100.0 * SUM(CASE WHEN tomatometer_sentiment = 'positive' THEN 1 ELSE 0 END) / COUNT(*), 1) as positive_pct
+          FROM reviews
+          WHERE movie_slug = :movie_slug
+            AND publication_name IS NOT NULL
+          GROUP BY publication_name
+          ORDER BY review_count DESC
+          LIMIT 20

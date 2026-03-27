@@ -8,8 +8,9 @@ on:
       - "rotten_tomatoes.py"
       - "movies.json"
       - "pyproject.toml"
+      - "uv.lock"
+      - "metadata.yml"
       - "deploy/**"
-      - "web/**"
       - ".github/workflows/**"
 
 jobs:
@@ -38,6 +39,9 @@ jobs:
           gcloud compute scp \
             rotten_tomatoes.py \
             movies.json \
+            pyproject.toml \
+            uv.lock \
+            metadata.yml \
             jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
             --zone=us-east1-b \
             --quiet
@@ -50,17 +54,9 @@ jobs:
             --zone=us-east1-b \
             --quiet
 
-      - name: Deploy dashboard to VM
-        run: |
-          gcloud compute scp --recurse \
-            web/ \
-            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
-            --zone=us-east1-b \
-            --quiet
-
-      - name: Sync dependencies and restart dashboard
+      - name: Sync dependencies and restart Datasette
         run: |
           gcloud compute ssh jakelehner@rt-scraper \
             --zone=us-east1-b \
             --quiet \
-            --command="cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync && cd web && ~/.local/bin/uv sync && sudo systemctl restart rt-dashboard"
+            --command="cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync && sudo systemctl restart rt-datasette"

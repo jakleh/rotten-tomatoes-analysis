@@ -14,6 +14,7 @@ import pytest
 from rotten_tomatoes import (
     _migrate_v1_review_ids,
     _migrate_v2_timestamp_confidence,
+    _migrate_v3_provenance_columns,
     compute_review_id,
     convert_rel_timestamp_to_abs,
     fetch_review_count,
@@ -57,6 +58,8 @@ def make_review(name="Alice", pub="AV Club", rating="4/5", movie_slug=SLUG, **kw
         "publication_name": pub,
         "top_critic": False,
         "timestamp_confidence": "d",
+        "scraped_at": "2026-03-21 10:00:00",
+        "raw_timestamp_text": "5m",
         **kwargs,
     }
 
@@ -336,6 +339,75 @@ class TestMigrateV2TimestampConfidence:
         _migrate_v2_timestamp_confidence(conn)  # Should not raise
 
 
+class TestMigrateV3ProvenanceColumns:
+    """Tests for _migrate_v3_provenance_columns — adds scraped_at, raw_timestamp_text, and indexes."""
+
+    def _make_pre_v3_conn(self):
+        """Create an in-memory DB with the pre-v3 schema (v2 columns but no provenance)."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                movie_slug TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                unique_review_id TEXT UNIQUE NOT NULL,
+                subjective_score TEXT,
+                tomatometer_sentiment TEXT,
+                timestamp_confidence TEXT NOT NULL DEFAULT 'd',
+                reviewer_name TEXT,
+                publication_name TEXT,
+                top_critic INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.commit()
+        return conn
+
+    def test_adds_columns(self):
+        conn = self._make_pre_v3_conn()
+        _migrate_v3_provenance_columns(conn)
+        col_names = [row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()]
+        assert "scraped_at" in col_names
+        assert "raw_timestamp_text" in col_names
+
+    def test_creates_indexes(self):
+        conn = self._make_pre_v3_conn()
+        _migrate_v3_provenance_columns(conn)
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(reviews)").fetchall()}
+        assert "idx_reviews_movie_slug" in indexes
+        assert "idx_reviews_movie_timestamp" in indexes
+
+    def test_idempotent(self):
+        conn = self._make_pre_v3_conn()
+        _migrate_v3_provenance_columns(conn)
+        _migrate_v3_provenance_columns(conn)  # Should not raise
+
+    def test_existing_data_gets_defaults(self):
+        conn = self._make_pre_v3_conn()
+        conn.execute(
+            "INSERT INTO reviews (movie_slug, timestamp, unique_review_id) "
+            "VALUES ('m', '2026-01-01 12:00:00', 'id1')"
+        )
+        conn.commit()
+        _migrate_v3_provenance_columns(conn)
+        row = conn.execute("SELECT scraped_at, raw_timestamp_text FROM reviews").fetchone()
+        assert row["scraped_at"] == ""
+        assert row["raw_timestamp_text"] == ""
+
+    def test_full_init_reviews_table_reaches_v3(self):
+        conn = make_conn()
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == 3
+        col_names = [r[1] for r in conn.execute("PRAGMA table_info(reviews)").fetchall()]
+        assert "scraped_at" in col_names
+        assert "raw_timestamp_text" in col_names
+
+    def test_empty_table_no_error(self):
+        conn = self._make_pre_v3_conn()
+        _migrate_v3_provenance_columns(conn)  # Should not raise
+
+
 # ── insert_review / deduplication ─────────────────────────────────────────────
 
 class TestInsertReview:
@@ -388,6 +460,30 @@ class TestInsertReview:
             (review["unique_review_id"],),
         ).fetchone()
         assert row["tomatometer_sentiment"] is None
+
+    def test_scraped_at_and_raw_timestamp_text_persisted(self):
+        conn = make_conn()
+        review = make_review(scraped_at="2026-03-21 15:30:00", raw_timestamp_text="3h")
+        insert_review(conn, self.SLUG, review)
+        row = conn.execute(
+            "SELECT scraped_at, raw_timestamp_text FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row["scraped_at"] == "2026-03-21 15:30:00"
+        assert row["raw_timestamp_text"] == "3h"
+
+    def test_new_columns_default_when_missing(self):
+        conn = make_conn()
+        review = make_review()
+        del review["scraped_at"]
+        del review["raw_timestamp_text"]
+        insert_review(conn, self.SLUG, review)
+        row = conn.execute(
+            "SELECT scraped_at, raw_timestamp_text FROM reviews WHERE unique_review_id = ?",
+            (review["unique_review_id"],),
+        ).fetchone()
+        assert row["scraped_at"] == ""
+        assert row["raw_timestamp_text"] == ""
 
 
 # ── interpolate_timestamps ────────────────────────────────────────────────────

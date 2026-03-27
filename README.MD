@@ -1,6 +1,6 @@
-# Rotten Tomatoes Review Scraper & Analytics Dashboard
+# Rotten Tomatoes Review Scraper
 
-A web scraper that builds a time-series database of Rotten Tomatoes movie reviews, plus an analytics dashboard for viewing and analyzing that data. The scraper runs on a GCP VM via cron, and the dashboard runs on the same VM as a systemd service.
+A web scraper that builds a time-series database of Rotten Tomatoes movie reviews. The scraper runs on a GCP VM via cron, and Datasette provides a zero-code web UI for browsing and querying the data.
 
 ## How It Works
 
@@ -28,7 +28,7 @@ Reviews that the hour window missed get their timestamps interpolated — evenly
 
 ### Deduplication
 
-Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name + subjective_score)`, enforced by a SQLite UNIQUE constraint.
+Each review gets a unique ID via MD5 hash of `(movie_slug + reviewer_name + publication_name + subjective_score)`, enforced by a SQLite UNIQUE constraint.
 
 ## Database Schema
 
@@ -46,6 +46,8 @@ Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name 
 | `reviewer_name` | TEXT | |
 | `publication_name` | TEXT | |
 | `top_critic` | INTEGER | `1` if from top-critics filter |
+| `scraped_at` | TEXT | UTC datetime when the review was first captured |
+| `raw_timestamp_text` | TEXT | Original RT relative timestamp (e.g., `5m`, `3h`, `Mar 20`) |
 
 ### `precheck_state`
 
@@ -56,25 +58,19 @@ Each review gets a unique ID via MD5 hash of `(reviewer_name + publication_name 
 | `consecutive_failures` | INTEGER | Consecutive pre-check failures |
 | `last_checked` | TEXT | UTC datetime of last check |
 
-## Analytics Dashboard
+## Datasette
 
-A web dashboard for browsing and analyzing scraped review data. Built with FastAPI, Jinja2, HTMX, and Plotly.js.
+Datasette provides a browser-based UI for exploring the review database — filterable tables, faceted search, a SQL editor, JSON/CSV export, and inline charts via the datasette-vega plugin.
 
-**Features:**
-- Paginated review table with movie filtering and date filtering (show reviews after a given date)
-- Per-movie analytics charts: Tomatometer over time (auto-scaled), review volume, top critic comparison, cumulative reviews
-- Stats panel: current Tomatometer %, total reviews, positive/negative counts, top critic score, average reviews per day
-- PDF reports: document preview with interactive charts, downloadable PDF with summary stats, matplotlib charts, and publication table
-
-**Access** (via SSH tunnel — dashboard binds to `127.0.0.1:8000`):
+**Access** (via SSH tunnel — Datasette binds to `127.0.0.1:8001`):
 ```bash
-ssh -L 8000:127.0.0.1:8000 jakelehner@<vm-ip>
-# Then open http://localhost:8000
+ssh -L 8001:127.0.0.1:8001 jakelehner@<vm-ip>
+# Then open http://localhost:8001
 ```
 
 **Local development:**
 ```bash
-cd web && uv run uvicorn app.main:app --reload
+uv run datasette reviews.db -i --metadata metadata.yml
 ```
 
 ## Setup
@@ -82,15 +78,11 @@ cd web && uv run uvicorn app.main:app --reload
 **Requirements:** Python 3.14+, [uv](https://docs.astral.sh/uv/), Chromium/Chrome
 
 ```bash
-# Install scraper dependencies
+# Install dependencies
 uv sync
 
-# Install dashboard dependencies
-cd web && uv sync
-
 # Install dev dependencies (for testing)
-uv sync --group dev          # scraper
-cd web && uv sync --group dev  # dashboard
+uv sync --group dev
 ```
 
 ## Configuration
@@ -122,28 +114,24 @@ uv run python rotten_tomatoes.py --window hour --movie project_hail_mary
 ## Testing
 
 ```bash
-# Scraper tests
 uv run --group dev pytest tests/ -v
-
-# Dashboard tests
-cd web && uv run --group dev pytest tests/ -v
 ```
 
 All tests use in-memory SQLite and mocks — no network or browser required.
 
 ## Deployment
 
-The scraper and dashboard run on a GCP e2-micro VM (free tier, Debian 12). The scraper runs via cron, and the dashboard runs as a systemd service (`rt-dashboard`). Both are auto-deployed via GitHub Actions on push to `main`.
+The scraper and Datasette run on a GCP e2-micro VM (free tier, Debian 12). The scraper runs via cron, and Datasette runs as a systemd service (`rt-datasette`). Both are auto-deployed via GitHub Actions on push to `main`.
 
 ### CI/CD
 
 Pushing to `main` triggers `.github/workflows/deploy.yml`, which:
 1. Authenticates with GCP via Workload Identity Federation (no stored keys)
-2. SCPs scraper files and the `web/` directory to the VM
-3. Runs `uv sync` for both scraper and dashboard dependencies
-4. Restarts the `rt-dashboard` systemd service
+2. SCPs scraper files, metadata, and deploy scripts to the VM
+3. Runs `uv sync` for dependencies
+4. Restarts the `rt-datasette` systemd service
 
-The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.json`, `pyproject.toml`, `deploy/**`, `web/**`, `.github/workflows/**`. It can also be triggered manually from the Actions tab.
+The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.json`, `pyproject.toml`, `uv.lock`, `metadata.yml`, `deploy/**`, `.github/workflows/**`. It can also be triggered manually from the Actions tab.
 
 ### Cron Schedule
 
@@ -161,16 +149,16 @@ The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.jso
 gcloud compute ssh rt-scraper --zone=us-east1-b
 
 # Manual deploy (if CI/CD is unavailable)
-gcloud compute scp rotten_tomatoes.py movies.json \
+gcloud compute scp rotten_tomatoes.py movies.json metadata.yml pyproject.toml uv.lock \
   jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ --zone=us-east1-b
 
-# Full VM setup (installs deps, Chrome, cron, Ops Agent, dashboard service)
+# Full VM setup (installs deps, Chrome, cron, Ops Agent, Datasette service)
 # Run deploy/setup_vm.sh on the VM
 ```
 
 ### Monitoring
 
-- **Logs**: `scraper.log` (Python logging), `cron.log` (cron stdout/stderr), and `dashboard.log` (uvicorn output) are shipped to Cloud Logging via the Google Cloud Ops Agent
+- **Logs**: `scraper.log` (Python logging), `cron.log` (cron stdout/stderr), and `datasette.log` (Datasette output) are shipped to Cloud Logging via the Google Cloud Ops Agent
 - **Alerts**: Cloud Monitoring emails on ERROR-level log entries (pre-check failures, Selenium errors, backup failures)
 - **Backups**: Daily SQLite snapshots to `gs://rotten-tomatoes-scraper-backups/`
 
@@ -179,22 +167,20 @@ gcloud compute scp rotten_tomatoes.py movies.json \
 ```
 ├── rotten_tomatoes.py           # Main scraper
 ├── movies.json                  # Movie config: [{slug, enabled}]
+├── metadata.yml                 # Datasette config (facets, queries, descriptions)
 ├── tests/
 │   └── test_rotten_tomatoes.py  # Scraper tests (pure logic, no network/browser)
+├── scripts/
+│   └── backfill.py              # One-time historical review backfill
 ├── deploy/
 │   ├── setup_vm.sh              # GCP VM provisioning script
+│   ├── rt-datasette.service     # systemd unit for Datasette
 │   ├── backup_db.sh             # Daily GCS backup
 │   ├── cleanup_csv.sh           # Daily reference CSV cleanup
 │   └── ops-agent-config.yaml    # Cloud Logging agent config
-├── web/                         # Analytics dashboard (FastAPI + HTMX + Plotly.js)
-│   ├── pyproject.toml           # Dashboard dependencies
-│   ├── app/                     # FastAPI app (routers, services, math, templates)
-│   ├── tests/                   # Dashboard tests
-│   └── deploy/
-│       └── rt-dashboard.service # systemd unit for dashboard
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml           # GitHub Actions: auto-deploy on push to main
-├── pyproject.toml               # Scraper dependencies (uv managed)
+├── pyproject.toml               # Dependencies (uv managed)
 └── uv.lock                      # Lockfile
 ```

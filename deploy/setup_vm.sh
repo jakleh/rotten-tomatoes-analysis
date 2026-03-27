@@ -13,7 +13,7 @@ echo "Project dir: $PROJECT_DIR"
 
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo ""
-echo "[1/7] Installing system packages (chromium, git)..."
+echo "[1/6] Installing system packages (chromium, git)..."
 sudo apt-get update -qq
 sudo apt-get install -y chromium git
 
@@ -22,7 +22,7 @@ echo "      Chromium found at: $CHROME_BIN"
 
 # ── 2. uv ─────────────────────────────────────────────────────────────────────
 echo ""
-echo "[2/7] Installing uv..."
+echo "[2/6] Installing uv..."
 if command -v uv &>/dev/null; then
     echo "      uv already installed, skipping."
 else
@@ -34,13 +34,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # ── 3. Scraper dependencies ───────────────────────────────────────────────────
 echo ""
-echo "[3/7] Installing scraper dependencies via uv..."
+echo "[3/6] Installing scraper dependencies via uv..."
 cd "$PROJECT_DIR"
 uv sync
 
 # ── 4. Cron jobs ──────────────────────────────────────────────────────────────
 echo ""
-echo "[4/7] Installing cron jobs..."
+echo "[4/6] Installing cron jobs..."
 
 # Remove the entire RT scraper block (everything between markers), then add fresh.
 (crontab -l 2>/dev/null | sed '/^# Rotten Tomatoes scraper/,/^$/d' | sed '/^CHROME_BIN=/d' || true) | crontab -
@@ -59,7 +59,7 @@ EOF
 
 # ── 5. Ops Agent (log shipping to Cloud Logging) ────────────────────────────
 echo ""
-echo "[5/7] Configuring Ops Agent for Cloud Logging..."
+echo "[5/6] Configuring Ops Agent for Cloud Logging..."
 
 if ! systemctl is-active --quiet google-cloud-ops-agent; then
     echo "      Installing Ops Agent..."
@@ -74,20 +74,14 @@ sudo cp "$PROJECT_DIR/deploy/ops-agent-config.yaml" /etc/google-cloud-ops-agent/
 sudo systemctl restart google-cloud-ops-agent
 echo "      Ops Agent configured and restarted."
 
-# ── 6. Dashboard dependencies ────────────────────────────────────────────────
+# ── 6. Datasette systemd service ─────────────────────────────────────────────
 echo ""
-echo "[6/7] Installing dashboard dependencies via uv..."
-cd "$PROJECT_DIR/web"
-uv sync
-
-# ── 7. Dashboard systemd service ─────────────────────────────────────────────
-echo ""
-echo "[7/7] Setting up rt-dashboard systemd service..."
-sudo cp "$PROJECT_DIR/web/deploy/rt-dashboard.service" /etc/systemd/system/rt-dashboard.service
+echo "[6/6] Setting up rt-datasette systemd service..."
+sudo cp "$PROJECT_DIR/deploy/rt-datasette.service" /etc/systemd/system/rt-datasette.service
 sudo systemctl daemon-reload
-sudo systemctl enable rt-dashboard
-sudo systemctl restart rt-dashboard
-echo "      rt-dashboard service enabled and started."
+sudo systemctl enable rt-datasette
+sudo systemctl restart rt-datasette
+echo "      rt-datasette service enabled and started."
 
 echo ""
 echo "=== Setup complete! ==="
@@ -101,10 +95,10 @@ echo "DB backup runs daily at 3:00 AM."
 echo "CSV cleanup runs daily at 4:00 AM."
 echo "Scraper logs → $CRON_LOG"
 echo ""
-echo "Dashboard status:"
-systemctl is-active rt-dashboard && echo "  rt-dashboard is running on 127.0.0.1:8000" || echo "  WARNING: rt-dashboard failed to start — check: journalctl -u rt-dashboard"
-echo "Dashboard logs → $PROJECT_DIR/dashboard.log"
-echo "Access via SSH tunnel: ssh -L 8000:127.0.0.1:8000 <vm-ip>"
+echo "Datasette status:"
+systemctl is-active rt-datasette && echo "  rt-datasette is running on 127.0.0.1:8001" || echo "  WARNING: rt-datasette failed to start — check: journalctl -u rt-datasette"
+echo "Datasette logs → $PROJECT_DIR/datasette.log"
+echo "Access via SSH tunnel: ssh -L 8001:127.0.0.1:8001 <vm-ip>"
 echo ""
 echo "To test the scraper immediately, run:"
 echo "  cd $PROJECT_DIR && CHROME_BIN=$CHROME_BIN $UV run python rotten_tomatoes.py --window hour"

@@ -1,0 +1,19 @@
+[Unit]
+Description=Rotten Tomatoes Datasette
+After=network.target
+
+[Service]
+Type=exec
+User=jakelehner
+Group=jakelehner
+WorkingDirectory=/home/jakelehner/rotten-tomatoes-analysis
+ExecStart=/home/jakelehner/.local/bin/uv run datasette reviews.db --host 127.0.0.1 --port 8001 -i --metadata metadata.yml
+StandardOutput=append:/home/jakelehner/rotten-tomatoes-analysis/datasette.log
+StandardError=append:/home/jakelehner/rotten-tomatoes-analysis/datasette.log
+MemoryHigh=100M
+MemoryMax=150M
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
