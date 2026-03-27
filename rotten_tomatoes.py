@@ -467,7 +467,8 @@ def has_new_reviews(conn: sqlite3.Connection, movie_slug: str) -> bool:
             "Pre-check: new reviews for %s: %d → %d (+%d) — will scrape.",
             movie_slug, last_count, current_count, current_count - last_count,
         )
-        update_last_review_count(conn, movie_slug, current_count)
+        # Don't update stored count yet — wait until the scrape confirms capture.
+        # This way, if the scrape finds 0 new reviews, the next cycle retries.
         return True
 
     if current_count < last_count:
@@ -483,7 +484,6 @@ def has_new_reviews(conn: sqlite3.Connection, movie_slug: str) -> bool:
         "Pre-check: no new reviews for %s (count=%d). Skipping Selenium.",
         movie_slug, current_count,
     )
-    update_last_review_count(conn, movie_slug, current_count)
     return False
 
 
@@ -588,6 +588,7 @@ def get_reviews(
         driver.quit()
 
     reviews = []
+    skipped_timestamps = []
     for item in review_items:
         # Timestamp
         ts_tag = item.find("span", attrs={"slot": "timestamp"})
@@ -595,6 +596,7 @@ def get_reviews(
 
         # Skip reviews at or older than the stop unit
         if stop_at_unit and rel_ts and is_at_or_older_than(rel_ts, stop_at_unit):
+            skipped_timestamps.append(rel_ts)
             continue
 
         abs_ts = convert_rel_timestamp_to_abs(rel_ts) if rel_ts else None
@@ -637,6 +639,13 @@ def get_reviews(
             "timestamp_confidence": confidence,
         })
 
+    if skipped_timestamps and not reviews:
+        newest_skipped = skipped_timestamps[:5]
+        log.warning(
+            "All %d cards filtered out for %s (%s). "
+            "Newest skipped timestamps: %s",
+            len(skipped_timestamps), movie_slug, critic_filter, newest_skipped,
+        )
     log.info(
         "Parsed %d reviews (after filtering) for %s (%s)",
         len(reviews), movie_slug, critic_filter,
@@ -776,7 +785,18 @@ def scrape_hour_sliding_window(movie_slug: str, minute_increment: int = 5) -> No
                         review.get("reviewer_name"),
                         review.get("publication_name"),
                     )
-        log.info("Hour window complete. Inserted %d new reviews.", inserted_total)
+
+        if inserted_total > 0:
+            current_count = fetch_review_count(movie_slug)
+            if current_count is not None:
+                update_last_review_count(conn, movie_slug, current_count)
+            log.info("Hour window complete. Inserted %d new reviews.", inserted_total)
+        else:
+            log.warning(
+                "Hour window: pre-check indicated new reviews for %s but "
+                "scrape captured 0. Keeping old count so next cycle retries.",
+                movie_slug,
+            )
     except Exception as e:
         log.error("Hour window error for %s: %s", movie_slug, e)
     finally:

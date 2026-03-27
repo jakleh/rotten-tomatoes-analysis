@@ -94,7 +94,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 - **`scrape_hour_sliding_window(movie_slug)`** — Runs every 5 min via cron. Pre-checks review count via HTTP first; only launches Selenium if count changed. Frequency ensures lagging reviews are caught within a short time horizon.
 - **`scrape_day_sliding_window(movie_slug)`** — Runs every 6 hours via cron. Always does full scrape. Reconciles lagging reviews missed by the hour window, exports reference CSV, calibrates pre-check state.
 - **SQLite layer** — `init_reviews_table` (single unified table with `movie_slug` column, schema versioning via `schema_version` table), `insert_review` (dedup via MD5 unique_review_id), `update_sentiment` (fills NULL tomatometer_sentiment only), `get_db_review_ids`, `get_db_reviews_sorted`, `export_reference_csv`
-- **Pre-check system** — `fetch_review_count()` hits main movie page (`/m/{slug}`) with `requests`, extracts count via regex `(\d+) Reviews`. `has_new_reviews()` compares against stored count in `precheck_state` table. Tracks consecutive failures; logs WARNING each time, ERROR after 10+. Falls back to full Selenium scrape on failure.
+- **Pre-check system** — `fetch_review_count()` hits main movie page (`/m/{slug}`) with `requests`, extracts count via regex `(\d+) Reviews`. `has_new_reviews()` compares against stored count in `precheck_state` table. Tracks consecutive failures; logs WARNING each time, ERROR after 10+. Falls back to full Selenium scrape on failure. When count increases, the stored count is NOT updated until the hour window confirms it captured reviews — this ensures the next cycle retries if the scrape found 0 minute-level reviews.
 - **Reconciliation** — `reconcile_missing_reviews()` groups consecutive missing reviews, interpolates timestamps from DB anchor neighbors. Only reconciles reviews with at least one DB anchor (no false reconciliation on first run/empty DB).
 - **Deduplication** — MD5 hash of `(movie_slug + reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via SQLite UNIQUE constraint. Schema migration v1 rehashes existing rows automatically.
 - **Timestamp confidence** — `timestamp_confidence` column records the granularity of each review's timestamp: `"m"` (minute-level from RT), `"h"` (hour-level), `"d"` (day/date-level or interpolated). Set at scrape time from the RT time marker. Schema migration v2 replaces the old `reconciled_timestamp` boolean, defaulting all existing rows to `"d"`.
@@ -184,7 +184,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews,
 ### Hour Sliding Window (every 5 min)
 1. **Pre-check**: HTTP GET to `/m/{slug}`, regex for `(\d+) Reviews`, compare to stored count
 2. If count unchanged → skip, log, done
-3. If count changed or pre-check failed → launch Selenium
+3. If count changed or pre-check failed → launch Selenium (stored count deferred until capture confirmed)
 4. Scrape reviews with `stop_at_unit='h'` (only "m"-timestamped reviews)
 5. Insert new reviews (skip duplicates)
 6. High frequency ensures lagging reviews are caught within a short time horizon

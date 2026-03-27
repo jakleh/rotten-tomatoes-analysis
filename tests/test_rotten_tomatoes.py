@@ -604,7 +604,8 @@ class TestHasNewReviews:
         update_last_review_count(conn, self.SLUG, 100)
         with patch("rotten_tomatoes.fetch_review_count", return_value=105):
             assert has_new_reviews(conn, self.SLUG) is True
-        assert get_last_review_count(conn, self.SLUG) == 105
+        # Count should NOT be updated yet — deferred until scrape confirms capture
+        assert get_last_review_count(conn, self.SLUG) == 100
 
     def test_returns_true_when_count_decreased(self):
         conn = _make_precheck_conn()
