@@ -1,27 +1,22 @@
 """
-rotten_tomatoes.py — Rotten Tomatoes review scraper with time-series database.
+rotten_tomatoes.py — Rotten Tomatoes review scraper.
 
-Architecture:
-  - scrape_hour_sliding_window(): runs every N minutes, captures reviews from the past hour.
-    Frequency ensures lagging reviews are caught within a short time horizon.
-  - scrape_day_sliding_window():  runs every N hours, reconciles lagging reviews missed
-    by the hour window. Also exports reference CSVs and calibrates pre-check state.
-  - SQLite database: single `reviews` table with movie_slug column, deduplication via MD5 hash
+Runs every 50 minutes via Cloud Run Jobs + Cloud Scheduler.
+Scrapes reviews with relative timestamps (m/h/d), stops at absolute date format.
+Writes to Neon (PostgreSQL) via DATABASE_URL environment variable.
 """
 
-import csv
 import hashlib
 import json
 import logging
 import os
 import re
-import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
-
+import psycopg2
+import psycopg2.extras
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -31,579 +26,302 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# -- Logging -------------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("scraper.log"),
-        logging.StreamHandler(),
-    ],
 )
 log = logging.getLogger(__name__)
 
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# -- Constants -----------------------------------------------------------------
 
-DB_PATH = "reviews.db"
-
-# Timestamp age units ordered youngest → oldest.
 UNIT_ORDER = {"m": 0, "h": 1, "d": 2, "date": 3}
-
-# Scrape top-critics before all-critics so the top_critic flag is set correctly
-# before the all-critics pass attempts (and skips) the same review IDs.
 CRITIC_FILTERS = ["top-critics", "all-critics"]
-
-# Pre-check: lightweight HTTP request to detect new reviews before launching Selenium.
-PRECHECK_TIMEOUT = 10  # seconds
-PRECHECK_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-}
-PRECHECK_FAILURE_ERROR_THRESHOLD = 10  # log ERROR after this many consecutive failures
-
 MOVIES_CONFIG_PATH = "movies.json"
 
+# Regex for relative timestamps: "5m", "2h", "3d", "5min", "2hrs", "3days"
+RELATIVE_TS_PATTERN = re.compile(r"^(\d+)\s*(m|min|h|hr|d|day)s?$", re.IGNORECASE)
 
-# ── Config ───────────────────────────────────────────────────────────────────
+# Map regex capture groups to canonical unit letters
+UNIT_ALIASES = {"m": "m", "min": "m", "h": "h", "hr": "h", "d": "d", "day": "d"}
+
+# Centralized selectors for RT review card HTML parsing
+SELECTORS = {
+    "review_card": "review-card",
+    "timestamp": {"tag": "span", "attrs": {"slot": "timestamp"}},
+    "reviewer_name": {"tag": "rt-link", "attrs": {"slot": "name"}},
+    "publication": {"tag": "rt-link", "attrs": {"slot": "publication"}},
+    "rating": {"tag": "span", "attrs": {"slot": "rating"}},
+    "sentiment": {"tag": "score-icon-critics"},
+    "written_review": {"tag": "div", "attrs": {"slot": "review"}},
+    "load_more_xpath": '//*[@id="main-page-content"]/div/section/div/div[2]/div[2]/rt-button',
+}
+
+# Fields considered critical -- ERROR logged if ALL cards miss one of these
+CRITICAL_FIELDS = {"reviewer_name", "tomatometer_sentiment", "timestamp", "subjective_score"}
+
+# If a single scrape run inserts more than this many reviews for one movie,
+# it likely means a selector broke and hash inputs changed (creating new hashes
+# for every existing review). Rollback the batch instead of committing bad data.
+INSERT_SPIKE_THRESHOLD = 50
+
+
+# -- Config --------------------------------------------------------------------
 
 def load_movie_config() -> list[str]:
-    """
-    Load enabled movie slugs from movies.json.
-
-    Returns a list of slug strings. Logs a warning and returns an empty list
-    if the file is missing or malformed.
-    """
+    """Load enabled movie slugs from movies.json."""
     config_path = Path(MOVIES_CONFIG_PATH)
     if not config_path.exists():
         log.warning("Config file not found: %s", MOVIES_CONFIG_PATH)
         return []
-
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         log.error("Failed to read %s: %s", MOVIES_CONFIG_PATH, e)
         return []
-
     if not isinstance(data, list):
         log.error("Expected a JSON array in %s", MOVIES_CONFIG_PATH)
         return []
-
-    slugs = []
-    for entry in data:
-        if not isinstance(entry, dict) or "slug" not in entry:
-            log.warning("Skipping invalid entry in %s: %r", MOVIES_CONFIG_PATH, entry)
-            continue
-        if entry.get("enabled", True):
-            slugs.append(entry["slug"])
-
-    return slugs
+    return [
+        e["slug"] for e in data
+        if isinstance(e, dict) and "slug" in e and e.get("enabled", True)
+    ]
 
 
-# ── Timestamp utilities ───────────────────────────────────────────────────────
+# -- Timestamp utilities -------------------------------------------------------
 
 def get_timestamp_unit(rel_timestamp: str) -> str:
     """Return 'm', 'h', 'd', or 'date' for a relative timestamp string."""
     rel_timestamp = rel_timestamp.strip()
     if not rel_timestamp:
         return "date"
-    last = rel_timestamp[-1]
-    return last if last in ("m", "h", "d") else "date"
+    match = RELATIVE_TS_PATTERN.match(rel_timestamp)
+    if match:
+        return UNIT_ALIASES[match.group(2).lower()]
+    return "date"
 
 
-def is_at_or_older_than(rel_timestamp: str, unit: str) -> bool:
-    """Return True if the timestamp is as old as or older than the given unit."""
-    return UNIT_ORDER.get(get_timestamp_unit(rel_timestamp), 3) >= UNIT_ORDER.get(unit, 0)
-
-
-def convert_rel_timestamp_to_abs(rel_timestamp: str) -> datetime | None:
+def convert_rel_timestamp_to_abs(rel_timestamp: str, scrape_time: datetime) -> datetime | None:
     """
-    Convert RT's relative timestamps to absolute UTC datetimes.
+    Convert RT's relative timestamp to an absolute UTC datetime.
 
-    Formats handled:
-      "5m"    → 5 minutes ago
-      "2h"    → 2 hours ago
-      "3d"    → 3 days ago
-      "Mar 20"→ March 20 of the current year (UTC)
+    Uses scrape_time as the reference point so all reviews in a single scrape
+    have a consistent reference.
+
+    Formats:
+      "5m"     -> 5 minutes before scrape_time
+      "2h"     -> 2 hours before scrape_time
+      "3d"     -> 3 days before scrape_time
+      "Mar 20" -> March 20, inferred year
     """
     rel_timestamp = rel_timestamp.strip()
     if not rel_timestamp:
         return None
 
-    unit = get_timestamp_unit(rel_timestamp)
+    match = RELATIVE_TS_PATTERN.match(rel_timestamp)
+    if match:
+        value = int(match.group(1))
+        unit = UNIT_ALIASES[match.group(2).lower()]
+        delta_map = {
+            "m": timedelta(minutes=value),
+            "h": timedelta(hours=value),
+            "d": timedelta(days=value),
+        }
+        return scrape_time - delta_map[unit]
 
-    if unit == "date":
-        try:
-            current_year = datetime.now(timezone.utc).year
-            parsed = datetime.strptime(f"{rel_timestamp} {current_year}", "%b %d %Y").replace(
-                tzinfo=timezone.utc
-            )
-            if parsed > datetime.now(timezone.utc):
-                parsed = parsed.replace(year=current_year - 1)
-            return parsed
-        except ValueError:
-            log.warning("Could not parse date timestamp: %r", rel_timestamp)
-            return None
-
+    # Absolute date format ("Mar 20")
     try:
-        value = int(rel_timestamp[:-1])
+        current_year = scrape_time.year
+        parsed = datetime.strptime(
+            f"{rel_timestamp} {current_year}", "%b %d %Y"
+        ).replace(tzinfo=timezone.utc)
+        if parsed > scrape_time:
+            parsed = parsed.replace(year=current_year - 1)
+        return parsed
     except ValueError:
-        log.warning("Could not parse relative timestamp: %r", rel_timestamp)
+        log.warning("Could not parse timestamp: %r", rel_timestamp)
         return None
 
-    delta_map = {
-        "m": timedelta(minutes=value),
-        "h": timedelta(hours=value),
-        "d": timedelta(days=value),
-    }
-    return datetime.now(timezone.utc) - delta_map[unit]
 
+# -- Database ------------------------------------------------------------------
 
-def _ts_to_str(dt: datetime | None) -> str | None:
-    """Format a datetime as the DB timestamp string, or None."""
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
-
-
-# ── Database ──────────────────────────────────────────────────────────────────
-
-def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_reviews_table(conn: sqlite3.Connection) -> None:
-    """Create the unified reviews table if it doesn't already exist."""
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS reviews (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            movie_slug            TEXT NOT NULL,
-            timestamp             TEXT NOT NULL,
-            unique_review_id      TEXT UNIQUE NOT NULL,
-            subjective_score      TEXT,
-            tomatometer_sentiment TEXT,
-            timestamp_confidence  TEXT NOT NULL DEFAULT 'd',
-            reviewer_name         TEXT,
-            publication_name      TEXT,
-            top_critic            INTEGER NOT NULL DEFAULT 0,
-            scraped_at            TEXT NOT NULL DEFAULT '',
-            raw_timestamp_text    TEXT NOT NULL DEFAULT ''
-        )
-    """)
-    # Migration: add tomatometer_sentiment to existing tables that lack it.
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN tomatometer_sentiment TEXT")
-        conn.commit()
-        log.info("Migrated reviews table: added tomatometer_sentiment column.")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    # Schema versioning for data migrations.
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
-    row = conn.execute("SELECT version FROM schema_version").fetchone()
-    current_version = row[0] if row else 0
-
-    if current_version < 1:
-        _migrate_v1_review_ids(conn)
-        if row:
-            conn.execute("UPDATE schema_version SET version = 1")
-        else:
-            conn.execute("INSERT INTO schema_version (version) VALUES (1)")
-        conn.commit()
-
-    if current_version < 2:
-        _migrate_v2_timestamp_confidence(conn)
-        conn.execute("UPDATE schema_version SET version = 2")
-        conn.commit()
-
-    if current_version < 3:
-        _migrate_v3_provenance_columns(conn)
-        conn.execute("UPDATE schema_version SET version = 3")
-        conn.commit()
-
-    conn.commit()
-    log.debug("Reviews table ready.")
-
-
-def _migrate_v1_review_ids(conn: sqlite3.Connection) -> None:
-    """Rehash all unique_review_ids to include movie_slug."""
-    rows = conn.execute(
-        "SELECT id, movie_slug, reviewer_name, publication_name, subjective_score FROM reviews"
-    ).fetchall()
-    if not rows:
-        return
-    for r in rows:
-        new_id = compute_review_id(r[1], r[2], r[3], r[4])
-        conn.execute("UPDATE reviews SET unique_review_id = ? WHERE id = ?", (new_id, r[0]))
-    conn.commit()
-    log.info("Migrated %d review IDs to include movie_slug in hash.", len(rows))
-
-
-def _migrate_v2_timestamp_confidence(conn: sqlite3.Connection) -> None:
-    """Replace reconciled_timestamp with timestamp_confidence column.
-
-    All existing rows get 'd' (day-level confidence) as a conservative default.
-    """
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN timestamp_confidence TEXT NOT NULL DEFAULT 'd'")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    conn.execute("UPDATE reviews SET timestamp_confidence = 'd'")
-    # Drop the old column if it exists (won't exist on fresh DBs).
-    col_names = [row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()]
-    if "reconciled_timestamp" in col_names:
-        conn.execute("ALTER TABLE reviews DROP COLUMN reconciled_timestamp")
-    conn.commit()
-    log.info("Migrated reviews table: replaced reconciled_timestamp with timestamp_confidence.")
-
-
-def _migrate_v3_provenance_columns(conn: sqlite3.Connection) -> None:
-    """Add scraped_at and raw_timestamp_text columns plus performance indexes."""
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN scraped_at TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN raw_timestamp_text TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_movie_slug ON reviews(movie_slug)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_movie_timestamp ON reviews(movie_slug, timestamp)")
-    conn.commit()
-    log.info("Migrated reviews table: added scraped_at, raw_timestamp_text columns and indexes.")
-
-
-def init_precheck_table(conn: sqlite3.Connection) -> None:
-    """Create the pre-check state table if it doesn't exist."""
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS precheck_state (
-            movie_slug           TEXT PRIMARY KEY,
-            last_review_count    INTEGER NOT NULL DEFAULT 0,
-            consecutive_failures INTEGER NOT NULL DEFAULT 0,
-            last_checked         TEXT
-        )
-    """)
-    conn.commit()
-
-
-def get_last_review_count(conn: sqlite3.Connection, movie_slug: str) -> int:
-    """Return the last known review count for a movie, or 0 if unknown."""
-    row = conn.execute(
-        "SELECT last_review_count FROM precheck_state WHERE movie_slug = ?",
-        (movie_slug,),
-    ).fetchone()
-    return row["last_review_count"] if row else 0
-
-
-def update_last_review_count(conn: sqlite3.Connection, movie_slug: str, count: int) -> None:
-    """Update the stored review count and reset the failure counter."""
-    conn.execute(
-        """INSERT INTO precheck_state (movie_slug, last_review_count, consecutive_failures, last_checked)
-           VALUES (?, ?, 0, ?)
-           ON CONFLICT(movie_slug) DO UPDATE SET
-               last_review_count = excluded.last_review_count,
-               consecutive_failures = 0,
-               last_checked = excluded.last_checked""",
-        (movie_slug, count, _ts_to_str(datetime.now(timezone.utc))),
-    )
-    conn.commit()
-
-
-def record_precheck_failure(conn: sqlite3.Connection, movie_slug: str) -> int:
-    """Increment the consecutive failure counter. Returns the new count."""
-    conn.execute(
-        """INSERT INTO precheck_state (movie_slug, consecutive_failures, last_checked)
-           VALUES (?, 1, ?)
-           ON CONFLICT(movie_slug) DO UPDATE SET
-               consecutive_failures = precheck_state.consecutive_failures + 1,
-               last_checked = excluded.last_checked""",
-        (movie_slug, _ts_to_str(datetime.now(timezone.utc))),
-    )
-    conn.commit()
-    row = conn.execute(
-        "SELECT consecutive_failures FROM precheck_state WHERE movie_slug = ?",
-        (movie_slug,),
-    ).fetchone()
-    return row["consecutive_failures"]
+def get_db_connection():
+    """Open a Postgres connection using DATABASE_URL from environment."""
+    return psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
 
 
 def compute_review_id(
     movie_slug: str, name: str | None, publication: str | None, rating: str | None
 ) -> str:
-    """MD5 hash of (movie_slug + reviewer name + publication + rating) used as the unique review ID."""
+    """MD5 hash of (movie_slug + reviewer_name + publication + subjective_score)."""
     key = f"{movie_slug}{name or ''}{publication or ''}{rating or ''}"
     return hashlib.md5(key.encode()).hexdigest()
 
 
-def insert_review(conn: sqlite3.Connection, movie_slug: str, review: dict) -> bool:
+def insert_review(conn, movie_slug: str, review: dict) -> bool:
     """
-    Insert a review into the database.
-    Returns True if inserted, False if the review already exists (duplicate ID).
+    Insert a review. Returns True if inserted, False if already exists.
+    ON CONFLICT DO NOTHING -- idempotent, safe to call multiple times.
     """
-    try:
-        conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
-            INSERT INTO reviews
-                (movie_slug, timestamp, unique_review_id, subjective_score,
-                 tomatometer_sentiment, timestamp_confidence, reviewer_name,
-                 publication_name, top_critic, scraped_at, raw_timestamp_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO reviews (
+                unique_review_id, movie_slug, reviewer_name, publication_name,
+                top_critic, tomatometer_sentiment, subjective_score, written_review,
+                site_timestamp_text, scrape_time, estimated_timestamp,
+                timestamp_confidence, page_position
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (unique_review_id) DO NOTHING
             """,
             (
-                movie_slug,
-                review["timestamp"],
                 review["unique_review_id"],
-                review.get("subjective_score"),
-                review.get("tomatometer_sentiment"),
-                review.get("timestamp_confidence", "d"),
+                movie_slug,
                 review.get("reviewer_name"),
                 review.get("publication_name"),
-                int(bool(review.get("top_critic", False))),
-                review.get("scraped_at", ""),
-                review.get("raw_timestamp_text", ""),
+                review.get("top_critic", False),
+                review.get("tomatometer_sentiment"),
+                review.get("subjective_score"),
+                review.get("written_review"),
+                review.get("site_timestamp_text"),
+                review["scrape_time"],
+                review.get("estimated_timestamp"),
+                review["timestamp_confidence"],
+                review.get("page_position"),
             ),
         )
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False  # Duplicate unique_review_id
+        return cur.rowcount > 0
 
 
-def update_sentiment(
-    conn: sqlite3.Connection, unique_review_id: str, sentiment: str | None
-) -> bool:
-    """Update tomatometer_sentiment for a review ONLY if currently NULL."""
-    if sentiment is None:
-        return False
-    cursor = conn.execute(
-        "UPDATE reviews SET tomatometer_sentiment = ? "
-        "WHERE unique_review_id = ? AND tomatometer_sentiment IS NULL",
-        (sentiment, unique_review_id),
-    )
-    conn.commit()
-    return cursor.rowcount > 0
-
-
-def get_db_review_ids(conn: sqlite3.Connection, movie_slug: str) -> set:
-    """Return the set of unique_review_ids currently in the database for a movie."""
-    rows = conn.execute(
-        "SELECT unique_review_id FROM reviews WHERE movie_slug = ?",
-        (movie_slug,),
-    ).fetchall()
-    return {row["unique_review_id"] for row in rows}
-
-
-def get_db_reviews_sorted(conn: sqlite3.Connection, movie_slug: str) -> list[dict]:
-    """Return all DB reviews for a movie sorted by timestamp ascending."""
-    rows = conn.execute(
-        "SELECT * FROM reviews WHERE movie_slug = ? ORDER BY timestamp ASC",
-        (movie_slug,),
-    ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def export_reference_csv(conn: sqlite3.Connection, movie_slug: str, critic_filter: str) -> str:
-    """Write a reference CSV snapshot of the current DB state. Returns the filename."""
-    reviews = get_db_reviews_sorted(conn, movie_slug)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    filename = f"{movie_slug}_{critic_filter}_{ts}_reference.csv"
-    fieldnames = [
-        "id", "movie_slug", "timestamp", "unique_review_id", "subjective_score",
-        "tomatometer_sentiment", "timestamp_confidence", "reviewer_name",
-        "publication_name", "top_critic", "scraped_at", "raw_timestamp_text",
-    ]
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(reviews)
-    log.info("Reference CSV written: %s (%d rows)", filename, len(reviews))
-    return filename
-
-
-# ── Pre-check ─────────────────────────────────────────────────────────────────
-
-def fetch_review_count(movie_slug: str) -> int | None:
-    """
-    Fetch the current total review count from the main movie page using a
-    lightweight HTTP request (no Selenium).
-
-    Returns the count as an int, or None if the request fails or the count
-    can't be extracted.
-    """
-    url = f"https://www.rottentomatoes.com/m/{movie_slug}"
-    try:
-        resp = requests.get(url, headers=PRECHECK_HEADERS, timeout=PRECHECK_TIMEOUT)
-        if resp.status_code != 200:
-            log.debug("Pre-check: HTTP %d from %s", resp.status_code, url)
-            return None
-
-        match = re.search(r"(\d+) Reviews", resp.text)
-        if match:
-            count = int(match.group(1))
-            log.debug("Pre-check: found %d reviews for %s", count, movie_slug)
-            return count
-
-        log.debug("Pre-check: no 'N Reviews' pattern found in page for %s", movie_slug)
-        return None
-
-    except requests.RequestException as e:
-        log.debug("Pre-check: request failed for %s: %s", movie_slug, e)
-        return None
-
-
-def has_new_reviews(conn: sqlite3.Connection, movie_slug: str) -> bool:
-    """
-    Check if new reviews have been posted since the last scrape.
-
-    Returns True if new reviews exist or if the check is inconclusive.
-    Returns False only when confidently determined that no new reviews exist.
-    """
-    current_count = fetch_review_count(movie_slug)
-
-    if current_count is None:
-        failures = record_precheck_failure(conn, movie_slug)
-        if failures >= PRECHECK_FAILURE_ERROR_THRESHOLD:
-            log.error(
-                "Pre-check has failed %d times in a row for %s — "
-                "the pre-check may be broken. Falling back to full Selenium scrape.",
-                failures, movie_slug,
-            )
-        else:
-            log.warning(
-                "Pre-check failed for %s (attempt %d) — falling back to full Selenium scrape.",
-                movie_slug, failures,
-            )
-        return True
-
-    last_count = get_last_review_count(conn, movie_slug)
-
-    if last_count == 0:
-        log.info(
-            "Pre-check: first run for %s, storing count=%d — will scrape.",
-            movie_slug, current_count,
-        )
-        update_last_review_count(conn, movie_slug, current_count)
-        return True
-
-    if current_count > last_count:
-        log.info(
-            "Pre-check: new reviews for %s: %d → %d (+%d) — will scrape.",
-            movie_slug, last_count, current_count, current_count - last_count,
-        )
-        # Don't update stored count yet — wait until the scrape confirms capture.
-        # This way, if the scrape finds 0 new reviews, the next cycle retries.
-        return True
-
-    if current_count < last_count:
-        log.warning(
-            "Pre-check: count decreased for %s: %d → %d — will scrape to be safe.",
-            movie_slug, last_count, current_count,
-        )
-        update_last_review_count(conn, movie_slug, current_count)
-        return True
-
-    # current_count == last_count
-    log.info(
-        "Pre-check: no new reviews for %s (count=%d). Skipping Selenium.",
-        movie_slug, current_count,
-    )
-    return False
-
-
-# ── Scraping ──────────────────────────────────────────────────────────────────
+# -- Scraping ------------------------------------------------------------------
 
 def _build_driver() -> webdriver.Chrome:
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")  # Required on VMs without a GPU
+    options.add_argument("--disable-gpu")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-plugins")
     options.add_argument("--js-flags=--max-old-space-size=256")
-
-    # Allow the Chrome/Chromium binary path to be overridden via env var.
-    # Useful on Linux VMs where Chromium lives at /usr/bin/chromium.
+    options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
         options.binary_location = chrome_bin
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(30)
+    driver.set_script_timeout(15)
+    return driver
 
-    return webdriver.Chrome(options=options)
+
+def _find_selector(card, selector_name: str):
+    """Find an element in a card using the centralized SELECTORS dict."""
+    sel = SELECTORS[selector_name]
+    if isinstance(sel, str):
+        return card.find(sel)
+    return card.find(sel["tag"], attrs=sel.get("attrs", {}))
 
 
 def get_reviews(
     movie_slug: str,
     critic_filter: str = "all-critics",
-    stop_at_unit: str | None = None,
 ) -> list[dict]:
     """
-    Scrape reviews for a movie from Rotten Tomatoes.
+    Scrape reviews for a movie. Loads pages until the oldest visible review has
+    an absolute date timestamp, then parses all relative-timestamp reviews.
+    Stops parsing at the first date-format card (RT is newest-first).
 
-    Args:
-        movie_slug:    RT movie slug, e.g. "project_hail_mary"
-        critic_filter: "all-critics" or "top-critics"
-        stop_at_unit:  Stop loading/parsing when a review with this age unit (or older) is
-                       encountered. 'h' → only return minute-old reviews;
-                       'd' → return minute- and hour-old reviews; None → return all.
-
-    Returns:
-        List of review dicts with keys: unique_review_id, timestamp,
-        tomatometer_sentiment, subjective_score, reviewer_name, publication_name,
-        top_critic, timestamp_confidence.
+    Returns list of review dicts including page_position (0 = newest).
     """
     url = f"https://www.rottentomatoes.com/m/{movie_slug}/reviews/{critic_filter}"
     top_critic = (critic_filter == "top-critics")
+    scrape_time = datetime.now(timezone.utc)
 
-    log.info(
-        "Scraping %s (%s)%s",
-        movie_slug, critic_filter,
-        f" [stop at '{stop_at_unit}']" if stop_at_unit else "",
-    )
+    log.info("Scraping %s (%s)", movie_slug, critic_filter)
 
     driver = _build_driver()
     try:
-        driver.get(url)
-        time.sleep(5)
+        # Retry loop for initial page load (3 attempts, 5s between retries)
+        for attempt in range(1, 4):
+            try:
+                driver.get(url)
+                break
+            except Exception as e:
+                if attempt < 3:
+                    log.warning(
+                        "Page load attempt %d/3 failed for %s: %s", attempt, url, e
+                    )
+                    time.sleep(5)
+                else:
+                    log.error("All 3 page load attempts failed for %s: %s", url, e)
+                    return []
+
+        # Wait for at least one review card to appear (replaces fixed sleep)
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS["review_card"]))
+        )
 
         wait = WebDriverWait(driver, 15)
+        prev_card_count = 0
+        stall_count = 0
         while True:
             try:
                 btn = wait.until(EC.element_to_be_clickable((
                     By.XPATH,
-                    '//*[@id="main-page-content"]/div/section/div/div[2]/div[2]/rt-button',
+                    SELECTORS["load_more_xpath"],
                 )))
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center'});", btn
+                )
                 time.sleep(1)
                 driver.execute_script("arguments[0].click();", btn)
                 log.debug("Clicked 'Load More'")
                 time.sleep(3)
 
-                # If a stop unit is set, check the oldest loaded review.
-                # If it's already as old as or older than the stop unit, no need to load more.
-                if stop_at_unit:
-                    soup = BeautifulSoup(driver.page_source, "html.parser")
-                    cards = soup.find_all("review-card")
-                    if cards:
-                        last_ts_tag = cards[-1].find("span", attrs={"slot": "timestamp"})
-                        if last_ts_tag:
-                            last_ts_text = last_ts_tag.get_text().strip()
-                            if is_at_or_older_than(last_ts_text, stop_at_unit):
-                                log.debug(
-                                    "Reached stop unit '%s' at '%s' — stopping load.",
-                                    stop_at_unit, last_ts_text,
-                                )
-                                break
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                cards = soup.find_all(SELECTORS["review_card"])
+                current_card_count = len(cards)
+
+                # Stall detection: bail after 2 consecutive clicks that add no cards
+                if current_card_count <= prev_card_count:
+                    stall_count += 1
+                    log.debug(
+                        "'Load More' click did not increase card count "
+                        "(still %d). Stall %d/2.",
+                        current_card_count, stall_count,
+                    )
+                    if stall_count >= 2:
+                        log.warning(
+                            "Load More stalled 2x at %d cards -- stopping load.",
+                            current_card_count,
+                        )
+                        break
+                else:
+                    stall_count = 0
+                prev_card_count = current_card_count
+
+                # Stop loading when oldest visible review has date-format timestamp
+                if cards:
+                    last_ts_tag = _find_selector(cards[-1], "timestamp")
+                    if last_ts_tag:
+                        last_ts = last_ts_tag.get_text().strip()
+                        if get_timestamp_unit(last_ts) == "date":
+                            log.debug(
+                                "Reached date-format timestamp '%s' -- stopping load.",
+                                last_ts,
+                            )
+                            break
 
             except (TimeoutException, ElementClickInterceptedException):
-                log.debug("No more 'Load More' button — all reviews loaded.")
+                log.debug("No more 'Load More' button -- all reviews loaded.")
                 break
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        review_items = soup.find_all("review-card")
+        cards = soup.find_all(SELECTORS["review_card"])
         log.info(
-            "Found %d review cards for %s (%s)", len(review_items), movie_slug, critic_filter
+            "Found %d review cards for %s (%s)", len(cards), movie_slug, critic_filter
         )
 
     except Exception as e:
@@ -612,279 +330,171 @@ def get_reviews(
     finally:
         driver.quit()
 
+    return _parse_cards(cards, movie_slug, critic_filter, top_critic, scrape_time)
+
+
+def _parse_cards(
+    cards,
+    movie_slug: str,
+    critic_filter: str,
+    top_critic: bool,
+    scrape_time: datetime,
+) -> list[dict]:
+    """Parse review cards into dicts. Stops at first date-format timestamp."""
+    # Track which critical fields are present across all cards
+    critical_field_present = {f: False for f in CRITICAL_FIELDS}
+
     reviews = []
-    skipped_timestamps = []
-    for item in review_items:
-        # Timestamp
-        ts_tag = item.find("span", attrs={"slot": "timestamp"})
+    for i, card in enumerate(cards):
+        ts_tag = _find_selector(card, "timestamp")
         rel_ts = ts_tag.get_text().strip() if ts_tag else ""
 
-        # Skip reviews at or older than the stop unit
-        if stop_at_unit and rel_ts and is_at_or_older_than(rel_ts, stop_at_unit):
-            skipped_timestamps.append(rel_ts)
-            continue
+        if not ts_tag:
+            log.warning("Card %d: missing 'timestamp' selector", i)
 
-        abs_ts = convert_rel_timestamp_to_abs(rel_ts) if rel_ts else None
-        ts_str = _ts_to_str(abs_ts)
+        # Stop at date-format reviews -- RT is newest-first
+        if get_timestamp_unit(rel_ts) == "date":
+            log.debug(
+                "Stopping parse at date-format timestamp '%s' (position %d).",
+                rel_ts, i,
+            )
+            break
 
-        # Tomatometer sentiment
-        sentiment_tag = item.find("score-icon-critics")
+        abs_ts = convert_rel_timestamp_to_abs(rel_ts, scrape_time) if rel_ts else None
+
+        unit = get_timestamp_unit(rel_ts)
+        confidence = unit if unit in ("m", "h", "d") else "d"
+
+        sentiment_tag = _find_selector(card, "sentiment")
         tomatometer = sentiment_tag.get("sentiment") if sentiment_tag else None
+        if not sentiment_tag:
+            log.warning("Card %d: missing 'sentiment' selector", i)
 
-        # Subjective (numerical) score
-        rating_container = item.find("span", attrs={"slot": "rating"})
+        rating_container = _find_selector(card, "rating")
         subjective_score = None
         if rating_container:
             inner = rating_container.find("span", style=True)
             if inner:
                 subjective_score = inner.get_text().strip()
+        if not subjective_score:
+            log.warning("Card %d: missing 'subjective_score'", i)
 
-        # Reviewer name
-        name_tag = item.find("rt-link", attrs={"slot": "name"})
+        name_tag = _find_selector(card, "reviewer_name")
         reviewer_name = name_tag.get_text().strip() if name_tag else None
+        if not name_tag:
+            log.warning("Card %d: missing 'reviewer_name' selector", i)
 
-        # Publication
-        pub_tag = item.find("rt-link", attrs={"slot": "publication"})
+        pub_tag = _find_selector(card, "publication")
         publication = pub_tag.get_text().strip() if pub_tag else None
 
-        # top_critic: simple filter-based approach — if scraping from top-critics page,
-        # all reviews are top critics. Easy to replace with HTML-based detection later.
-        # Map RT time unit to confidence: "m", "h", "d"; "date" (e.g. "Mar 12") → "d"
-        unit = get_timestamp_unit(rel_ts)
-        confidence = unit if unit in ("m", "h", "d") else "d"
+        review_tag = _find_selector(card, "written_review")
+        written_review = review_tag.get_text().strip() if review_tag else None
+
+        # Track critical field presence
+        if rel_ts:
+            critical_field_present["timestamp"] = True
+        if reviewer_name:
+            critical_field_present["reviewer_name"] = True
+        if tomatometer:
+            critical_field_present["tomatometer_sentiment"] = True
+        if subjective_score:
+            critical_field_present["subjective_score"] = True
 
         reviews.append({
-            "unique_review_id": compute_review_id(movie_slug, reviewer_name, publication, subjective_score),
-            "timestamp": ts_str,
+            "unique_review_id": compute_review_id(
+                movie_slug, reviewer_name, publication, subjective_score
+            ),
+            "scrape_time": scrape_time,
+            "estimated_timestamp": abs_ts,
+            "site_timestamp_text": rel_ts,
+            "timestamp_confidence": confidence,
             "tomatometer_sentiment": tomatometer,
             "subjective_score": subjective_score,
             "reviewer_name": reviewer_name,
             "publication_name": publication,
             "top_critic": top_critic,
-            "timestamp_confidence": confidence,
-            "scraped_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "raw_timestamp_text": rel_ts,
+            "written_review": written_review,
+            "page_position": i,
         })
 
-    if skipped_timestamps and not reviews:
-        newest_skipped = skipped_timestamps[:5]
-        log.warning(
-            "All %d cards filtered out for %s (%s). "
-            "Newest skipped timestamps: %s",
-            len(skipped_timestamps), movie_slug, critic_filter, newest_skipped,
-        )
-    log.info(
-        "Parsed %d reviews (after filtering) for %s (%s)",
-        len(reviews), movie_slug, critic_filter,
-    )
+    # ERROR if a critical field was NULL across ALL cards (likely selector breakage)
+    if reviews:
+        for field, present in critical_field_present.items():
+            if not present:
+                log.error(
+                    "Critical field '%s' was NULL across ALL %d cards for %s (%s) "
+                    "-- selector may be broken.",
+                    field, len(reviews), movie_slug, critic_filter,
+                )
+
+    log.info("Parsed %d reviews for %s (%s)", len(reviews), movie_slug, critic_filter)
     return reviews
 
 
-# ── Reconciliation ────────────────────────────────────────────────────────────
+# -- Main scrape ---------------------------------------------------------------
 
-def interpolate_timestamps(
-    before_ts: str | None,
-    after_ts: str | None,
-    count: int,
-) -> list[str | None]:
+def scrape(movie_slug: str) -> None:
+    """Scrape all recent reviews for a movie and insert new ones into Postgres.
+
+    Uses "connect late" pattern: scrapes into memory first, connects to DB
+    only for batch insert.
     """
-    Generate `count` evenly-spaced timestamp strings between before_ts and after_ts.
+    log.info("=== Scraping: %s ===", movie_slug)
 
-    - If both boundaries are known: divide the interval evenly.
-    - If only one boundary is known: all timestamps get that boundary's value.
-    - If neither is known: return a list of None (caller should fall back to the
-      review's own scraped timestamp).
-    """
-    fmt = "%Y-%m-%d %H:%M:%S"
+    # Phase 1: Scrape all reviews into memory (no DB connection during Selenium)
+    all_reviews = []
+    for critic_filter in CRITIC_FILTERS:
+        reviews = get_reviews(movie_slug, critic_filter)
+        all_reviews.append((critic_filter, reviews))
 
-    if before_ts and after_ts:
-        t1 = datetime.strptime(before_ts, fmt)
-        t2 = datetime.strptime(after_ts, fmt)
-        delta = (t2 - t1) / (count + 1)
-        return [(t1 + delta * i).strftime(fmt) for i in range(1, count + 1)]
-
-    fallback = before_ts or after_ts
-    return [fallback] * count
-
-
-def reconcile_missing_reviews(
-    conn: sqlite3.Connection,
-    movie_slug: str,
-    scraped_reviews: list[dict],
-) -> int:
-    """
-    Find reviews present in `scraped_reviews` but absent from the database.
-    Interpolate their timestamps from neighboring known reviews and insert them
-    with timestamp_confidence='d'.
-
-    Returns the number of reviews reconciled and inserted.
-    """
-    db_ids = get_db_review_ids(conn, movie_slug)
-    db_reviews = get_db_reviews_sorted(conn, movie_slug)
-    db_ts_by_id = {r["unique_review_id"]: r["timestamp"] for r in db_reviews}
-
-    missing_ids = {r["unique_review_id"] for r in scraped_reviews} - db_ids
-    if not missing_ids:
-        log.info("No missing reviews to reconcile for %s.", movie_slug)
-        return 0
-
-    log.info("Found %d missing reviews to reconcile for %s.", len(missing_ids), movie_slug)
-
-    # Work oldest-first through the scraped list, grouping consecutive missing reviews
-    # so we can interpolate between their known neighbors.
-    ordered = list(reversed(scraped_reviews))
-
-    i = 0
-    reconciled_count = 0
-    while i < len(ordered):
-        if ordered[i]["unique_review_id"] in db_ids:
-            i += 1
-            continue
-
-        # Start of a consecutive run of missing reviews
-        run_start = i
-        while i < len(ordered) and ordered[i]["unique_review_id"] not in db_ids:
-            i += 1
-        run_end = i  # exclusive
-
-        run = ordered[run_start:run_end]
-
-        # Anchor timestamps from the DB (not the scraped approximations)
-        before_id = ordered[run_start - 1]["unique_review_id"] if run_start > 0 else None
-        after_id = ordered[run_end]["unique_review_id"] if run_end < len(ordered) else None
-        before_ts = db_ts_by_id.get(before_id) if before_id else None
-        after_ts = db_ts_by_id.get(after_id) if after_id else None
-
-        # If neither anchor exists, we have no DB context for this time period —
-        # the hour window wasn't running yet, so these reviews aren't "lagging",
-        # they're just unseen. Skip them; the hour window will catch new ones.
-        if before_ts is None and after_ts is None:
-            log.debug(
-                "Skipping %d review(s) with no DB context (no surrounding hour-window data).",
-                len(run),
-            )
-            continue
-
-        timestamps = interpolate_timestamps(before_ts, after_ts, len(run))
-
-        for review, ts in zip(run, timestamps):
-            reconciled = dict(review)
-            reconciled["timestamp"] = ts
-            reconciled["timestamp_confidence"] = "d"
-            reconciled["scraped_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-            if insert_review(conn, movie_slug, reconciled):
-                reconciled_count += 1
-                log.info(
-                    "Reconciled '%s' (%s) → interpolated timestamp %s",
-                    review.get("reviewer_name"),
-                    review.get("publication_name"),
-                    reconciled["timestamp"],
-                )
-
-    return reconciled_count
-
-
-# ── Sliding windows ───────────────────────────────────────────────────────────
-
-def scrape_hour_sliding_window(movie_slug: str, minute_increment: int = 5) -> None:
-    """
-    Scrape reviews posted in the past hour and insert new ones into the database.
-    Intended to be called every `minute_increment` minutes via cron.
-    """
-    log.info("=== Hour sliding window: %s ===", movie_slug)
+    # Phase 2: Connect to DB and batch insert
     conn = get_db_connection()
     try:
-        init_reviews_table(conn)
-        init_precheck_table(conn)
-
-        if not has_new_reviews(conn, movie_slug):
-            log.info("Hour window complete. Skipped Selenium (no new reviews).")
-            return
-
         inserted_total = 0
-        for critic_filter in CRITIC_FILTERS:
-            reviews = get_reviews(movie_slug, critic_filter, stop_at_unit="h")
+        for critic_filter, reviews in all_reviews:
+            inserted_batch = 0
             for review in reviews:
                 if insert_review(conn, movie_slug, review):
-                    inserted_total += 1
+                    inserted_batch += 1
                     log.info(
                         "Inserted: %s (%s)",
                         review.get("reviewer_name"),
                         review.get("publication_name"),
                     )
 
-        if inserted_total > 0:
-            current_count = fetch_review_count(movie_slug)
-            if current_count is not None:
-                update_last_review_count(conn, movie_slug, current_count)
-            log.info("Hour window complete. Inserted %d new reviews.", inserted_total)
-        else:
-            log.warning(
-                "Hour window: pre-check indicated new reviews for %s but "
-                "scrape captured 0. Keeping old count so next cycle retries.",
-                movie_slug,
-            )
-    except Exception as e:
-        log.error("Hour window error for %s: %s", movie_slug, e)
-    finally:
-        conn.close()
-
-
-def scrape_day_sliding_window(movie_slug: str, hour_increment: int = 6) -> None:
-    """
-    Scrape all reviews from the past day, reconcile any missed by the hour window,
-    and write a reference CSV snapshot.
-    Intended to be called every `hour_increment` hours via cron.
-    """
-    log.info("=== Day sliding window: %s ===", movie_slug)
-    conn = get_db_connection()
-    try:
-        init_reviews_table(conn)
-        init_precheck_table(conn)
-        for critic_filter in CRITIC_FILTERS:
-            reviews = get_reviews(movie_slug, critic_filter, stop_at_unit="d")
-
-            db_ids = get_db_review_ids(conn, movie_slug)
-            scraped_ids = {r["unique_review_id"] for r in reviews}
-            missing_count = len(scraped_ids - db_ids)
-
-            log.info(
-                "Day window (%s): %d scraped, %d in DB, %d missing",
-                critic_filter, len(reviews), len(db_ids), missing_count,
-            )
-
-            if missing_count > 0:
-                reconciled = reconcile_missing_reviews(conn, movie_slug, reviews)
-                log.info(
-                    "Reconciled %d reviews for %s (%s).",
-                    reconciled, movie_slug, critic_filter,
+            # Spike guard: if insert count is abnormally high, a selector likely
+            # broke (changing hash inputs → new hashes for every existing review).
+            # Rollback instead of committing bad data.
+            if inserted_batch > INSERT_SPIKE_THRESHOLD:
+                log.error(
+                    "INSERT SPIKE: %d inserts for %s (%s) exceeds threshold %d. "
+                    "Possible selector breakage changing dedup hashes. "
+                    "Rolling back batch.",
+                    inserted_batch, movie_slug, critic_filter,
+                    INSERT_SPIKE_THRESHOLD,
                 )
+                conn.rollback()
+            else:
+                conn.commit()
+                inserted_total += inserted_batch
 
-            export_reference_csv(conn, movie_slug, critic_filter)
-
-            # Calibrate the pre-check state with the authoritative count from
-            # this full scrape, correcting any drift from stale HTTP responses.
-            update_last_review_count(conn, movie_slug, len(reviews))
-
+        if inserted_total == 0:
+            log.info("No new reviews for %s.", movie_slug)
+        else:
+            log.info("Inserted %d new reviews for %s.", inserted_total, movie_slug)
     except Exception as e:
-        log.error("Day window error for %s: %s", movie_slug, e)
+        log.error("Scrape error for %s: %s", movie_slug, e)
+        raise
     finally:
         conn.close()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# -- Entry point ---------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Rotten Tomatoes review scraper")
-    parser.add_argument(
-        "--window",
-        choices=["hour", "day", "both"],
-        default="both",
-        help="Which sliding window to run (default: both)",
-    )
     parser.add_argument(
         "--movie",
         default=None,
@@ -897,11 +507,13 @@ if __name__ == "__main__":
     else:
         movie_slugs = load_movie_config()
         if not movie_slugs:
-            log.error("No movies to scrape. Check %s or use --movie.", MOVIES_CONFIG_PATH)
+            log.error(
+                "No movies to scrape. Check %s or use --movie.", MOVIES_CONFIG_PATH
+            )
             raise SystemExit(1)
 
+    mode = "manual" if args.movie else "scheduled"
+    log.info("=== Run started: mode=%s, movies=%s ===", mode, movie_slugs)
+
     for slug in movie_slugs:
-        if args.window in ("hour", "both"):
-            scrape_hour_sliding_window(slug)
-        if args.window in ("day", "both"):
-            scrape_day_sliding_window(slug)
+        scrape(slug)
