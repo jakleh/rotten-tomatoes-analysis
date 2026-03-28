@@ -187,10 +187,60 @@ After reviewing `plan/errors/` playbooks, applied 5 additional preventative meas
 - First manual trigger showed `status.code: -1` for ~60 seconds (IAM propagation delay after granting `run.invoker`). Second trigger succeeded immediately.
 - Execution completed successfully: all 4 movies scraped, no errors, only expected `missing 'subjective_score'` warnings
 
-## Step 09: GitHub Actions — PENDING
+## Step 09: GitHub Actions — DONE (2026-03-27)
+
+### Changes Made
+1. Replaced `.github/workflows/deploy.yml` entirely — removed VM-based SCP/SSH deploy, replaced with Docker build + push + Cloud Run Job update
+2. Added G-2 prevention step: `docker run --rm IMAGE python -c "import rotten_tomatoes"` sanity check between build and push
+3. Updated path triggers: removed `metadata.yml` and `deploy/**`, added `Dockerfile`
+
+### Workflow Steps
+1. Checkout → WIF auth → setup gcloud
+2. Authenticate Docker to Artifact Registry
+3. Build image (tagged with commit SHA + `latest`)
+4. Verify image imports cleanly (G-2 sanity check)
+5. Push both tags to AR
+6. Update Cloud Run Job to pin to commit SHA image
+
+### Notes
+- First push triggered workflow successfully — all steps green
+- No new GitHub secrets needed (same WIF_PROVIDER + WIF_SERVICE_ACCOUNT)
+- G-6 (stale uv.lock) covered by `uv sync --frozen` in Dockerfile
+- `workflow_dispatch` retained as manual trigger safety net
 
 ## Step 10: Data Migration — ELIMINATED
 
-## Step 11: Verification — PENDING
+## Step 11: Verification — DONE (2026-03-27)
 
-## Step 12: Cleanup — PENDING
+### Checks Performed
+1. **Schema in Neon** — confirmed in Step 02 (14 columns + 2 indexes)
+2. **Review counts in Neon** — confirmed in Step 07 (all 4 movies populated via smoke tests)
+3. **Manual Cloud Run execution** — confirmed in Step 08 (scheduler manual trigger succeeded)
+4. **Cloud Scheduler firing autonomously** — confirmed: execution `rt-scraper-zt7d6` at 02:38 UTC triggered by Compute Engine SA (`1065819890045-compute@developer.gserviceaccount.com`), not user account. All 4 executions succeeded.
+5. **GitHub Actions deploy** — confirmed: workflow passed on push, Cloud Run Job pinned to image SHA `afe5dfda385bdacef0eaadae6a625b6ebc0eef69` matching `HEAD`
+6. **Force insert test** — skipped (Step 07 smoke tests already confirmed inserts work)
+
+### Notes
+- All verification items pass. System is fully operational: scheduler fires every 50 min, deploys update the image automatically on push to main.
+- CLAUDE.md and README.MD updates deferred to Step 12 (cleanup) per plan
+
+## Step 12: Cleanup — DONE (2026-03-27)
+
+### Phase A: GCP Infra Teardown
+1. Deleted VM: `gcloud compute instances delete rt-scraper --zone=us-east1-b` — confirmed, disk (reviews.db) destroyed
+2. Deleted GCS bucket: `gsutil rm -r gs://rotten-tomatoes-scraper-backups` — 6 daily backups removed
+3. Removed old IAM role: `compute.instanceAdmin.v1` from `github-deploy` SA. Remaining roles: `artifactregistry.writer`, `run.developer`
+4. Deleted old Cloud Monitoring alert policy (Ops Agent ERROR-level log entries) from console
+
+### Phase B: Repo Cleanup
+1. `git rm -r deploy/` — removed 6 files (setup_vm.sh, rt-datasette.service, backup_db.sh, cleanup_csv.sh, ops-agent-config.yaml, alert-policy.json)
+2. `git rm metadata.yml` — removed Datasette config
+3. Cleaned up local-only files: 2 reference CSVs, reviews.db-shm, reviews.db-wal
+4. Kept `scripts/backfill.py` (already rewritten for Postgres in Step 04)
+
+### Phase C: Documentation
+1. Rewrote `CLAUDE.md` — updated all sections for Cloud Run + Neon architecture
+2. Rewrote `README.MD` — updated all sections for Cloud Run + Neon architecture
+
+### Notes
+- This commit should NOT trigger the deploy workflow (none of the changed files match the path filter in deploy.yml)
