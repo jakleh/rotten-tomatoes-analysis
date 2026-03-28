@@ -166,7 +166,26 @@ After reviewing `plan/errors/` playbooks, applied 5 additional preventative meas
 - Spike guard fix required 2 iterations: `> 0` check insufficient, needed `>= threshold` comparison
 - All 4 movies now populated in Neon: project_hail_mary, ready_or_not_2_here_i_come, forbidden_fruits_2026, they_will_kill_you
 
-## Step 08: Cloud Scheduler — PENDING
+## Step 08: Cloud Scheduler — DONE (2026-03-27)
+
+### Commands Executed
+1. Granted `roles/run.invoker` to Compute Engine default SA (`1065819890045-compute@developer.gserviceaccount.com`)
+2. Created scheduler job: `gcloud scheduler jobs create http rt-scraper-schedule --location=us-east1 --schedule="every 50 minutes" --uri="https://run.googleapis.com/v2/projects/rotten-tomatoes-scraper/locations/us-east1/jobs/rt-scraper:run" --http-method=POST --message-body="{}" --oauth-service-account-email="1065819890045-compute@developer.gserviceaccount.com" --time-zone="America/New_York"`
+3. Manual trigger: `gcloud scheduler jobs run rt-scraper-schedule --location=us-east1`
+4. Verified execution `rt-scraper-zt7d6` completed successfully (triggered by SA, not user account)
+
+### Key Values
+| Value | Used In |
+|---|---|
+| Scheduler job name: `rt-scraper-schedule` | Steps 11, 12 |
+| Schedule: `every 50 minutes` (Groc format) | Reference |
+| Time zone: `America/New_York` | Reference |
+| Next scheduled run confirmed in `scheduleTime` field | Reference |
+
+### Notes
+- `every 50 minutes` Groc syntax works as expected (no fallback to cron needed)
+- First manual trigger showed `status.code: -1` for ~60 seconds (IAM propagation delay after granting `run.invoker`). Second trigger succeeded immediately.
+- Execution completed successfully: all 4 movies scraped, no errors, only expected `missing 'subjective_score'` warnings
 
 ## Step 09: GitHub Actions — PENDING
 
