@@ -1,4 +1,4 @@
-name: Deploy to GCP VM
+name: Deploy to Cloud Run
 
 on:
   workflow_dispatch:
@@ -9,8 +9,7 @@ on:
       - "movies.json"
       - "pyproject.toml"
       - "uv.lock"
-      - "metadata.yml"
-      - "deploy/**"
+      - "Dockerfile"
       - ".github/workflows/**"
 
 jobs:
@@ -31,32 +30,29 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Set up SSH key
-        run: ssh-keygen -t rsa -f ~/.ssh/google_compute_engine -N "" -q
+      - name: Authenticate Docker to Artifact Registry
+        run: gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
 
-      - name: Deploy scraper files to VM
+      - name: Build Docker image
         run: |
-          gcloud compute scp \
-            rotten_tomatoes.py \
-            movies.json \
-            pyproject.toml \
-            uv.lock \
-            metadata.yml \
-            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
-            --zone=us-east1-b \
-            --quiet
+          docker build \
+            -t us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:${{ github.sha }} \
+            -t us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:latest \
+            .
 
-      - name: Deploy scripts to VM
+      - name: Verify image imports cleanly
         run: |
-          gcloud compute scp --recurse \
-            deploy/ \
-            jakelehner@rt-scraper:~/rotten-tomatoes-analysis/ \
-            --zone=us-east1-b \
-            --quiet
+          docker run --rm \
+            us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:${{ github.sha }} \
+            python -c "import rotten_tomatoes"
 
-      - name: Sync dependencies and restart Datasette
+      - name: Push Docker image
         run: |
-          gcloud compute ssh jakelehner@rt-scraper \
-            --zone=us-east1-b \
-            --quiet \
-            --command="cd ~/rotten-tomatoes-analysis && ~/.local/bin/uv sync && sudo systemctl restart rt-datasette"
+          docker push us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:${{ github.sha }}
+          docker push us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:latest
+
+      - name: Update Cloud Run Job
+        run: |
+          gcloud run jobs update rt-scraper \
+            --image=us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:${{ github.sha }} \
+            --region=us-east1
