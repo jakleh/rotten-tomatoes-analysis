@@ -100,7 +100,7 @@ Tracks actual outputs, values, and completion status for each step.
 After reviewing `plan/errors/` playbooks, applied 5 additional preventative measures:
 1. `connect_timeout=10` on `psycopg2.connect()` — guards against Neon cold-start hangs (neon.md D-1)
 2. `--disable-blink-features=AutomationControlled` Chrome flag — reduces bot detection risk (selenium.md B-4)
-3. Dedup hash spike guard: if >50 inserts for one movie/filter batch, rollback + ERROR instead of committing (html_parsing.md C-6/C-7/C-9). `INSERT_SPIKE_THRESHOLD = 50` constant.
+3. Dedup hash spike guard: if >50 inserts for one movie/filter batch AND existing reviews >= 50, rollback + ERROR instead of committing (html_parsing.md C-6/C-7/C-9). `INSERT_SPIKE_THRESHOLD = 50` constant. DB-aware: skips guard when movie has fewer existing reviews than the threshold (fresh DB / newly added movie). Refined during Step 07 smoke testing.
 4. Load More stall detection: tracks card count before/after click, bails after 2 consecutive no-change clicks (selenium.md B-3/B-8). Applied to both `get_reviews()` and backfill's `get_all_reviews()`.
 5. Replaced `time.sleep(5)` with `WebDriverWait` for `review-card` presence after initial page load (selenium.md B-7). Faster and more reliable. Applied to both files.
 
@@ -108,11 +108,63 @@ After reviewing `plan/errors/` playbooks, applied 5 additional preventative meas
 - `load_movie_config()` one-liner needed `"slug" in e` guard (caught by existing test)
 - All 10 corrections from consolidated plan review applied
 
-## Step 05: Dockerfile — PENDING
+## Step 05: Dockerfile — DONE (2026-03-27)
 
-## Step 06: Artifact Registry Push — PENDING
+### Files Created
+1. `Dockerfile` — `python:3.14-slim-bookworm` base, Chromium + ChromeDriver via apt, uv for deps, layer-cached dependency install
+2. `.dockerignore` — excludes reviews.db, logs, CSVs, .git, tests, scripts, plan, deploy, .github, *.md
 
-## Step 07: Cloud Run Job — PENDING
+### Chrome Error Prevention Applied
+- `--no-install-recommends` on apt to keep image lean
+- Build-time `chromium --version && chromedriver --version` verification (A-3/A-5)
+- Both `chromium` and `chromium-driver` from same apt source (A-3/A-4 version match)
+- `ENV CHROME_BIN=/usr/bin/chromium` set in image (A-9)
+- `_build_driver()` already has: `--no-sandbox` (A-1/A-6), `--disable-dev-shm-usage` (A-7), `--js-flags=--max-old-space-size=256` (A-2), timeouts (A-8)
+
+### Notes
+- Docker is not installed on this Mac — build and local test deferred to after Docker Desktop (or equivalent) is installed
+- Python 3.14 base image availability to be confirmed at build time; fallback is `python:3.13-slim-bookworm` + update `requires-python` in pyproject.toml
+- If `chromium-driver` package name is wrong on slim-bookworm, run `docker run --rm python:3.14-slim-bookworm apt-cache search chromium` to find the correct name
+
+## Step 06: Artifact Registry Push — DONE (2026-03-27)
+
+### Commands Executed
+1. Built image locally: `docker build -t rt-scraper:local .`
+2. Verified Chrome versions: Chromium 146.0.7680.164, ChromeDriver 146.0.7680.164 (matched)
+3. Tagged with `latest` and SHA `35bc2631630710a2c872f61772a5e7b15b9bb919`
+4. Pushed both tags to `us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper`
+5. Verified in Artifact Registry: image present, ~347MB compressed
+
+### Notes
+- Python 3.14-slim-bookworm base image available (no fallback to 3.13 needed)
+- `chromium` and `chromium-driver` package names correct on slim-bookworm
+- **Platform gotcha**: initial build produced ARM image (Apple Silicon default). Cloud Run rejected it: `must support amd64/linux`. Rebuilt with `docker buildx build --platform linux/amd64 --push .` — this cross-compiles via QEMU emulation. GitHub Actions (Step 09) will build natively on amd64 runners, so this is a one-time local issue.
+- Old ARM images left as untagged manifests in AR — will be cleaned up by the 30-day retention policy (or Step 12)
+
+## Step 07: Cloud Run Job — DONE (2026-03-27)
+
+### Commands Executed
+1. Created job: `gcloud run jobs create rt-scraper --memory=2Gi --cpu=1 --task-timeout=900s --max-retries=1 --set-secrets=DATABASE_URL=DATABASE_URL:latest --set-env-vars=CHROME_BIN=/usr/bin/chromium`
+2. First attempt failed: image was ARM (Apple Silicon), Cloud Run requires amd64. Rebuilt with `docker buildx build --platform linux/amd64 --push .`
+3. Deleted partial job from failed create, recreated successfully
+4. Smoke test #1: job succeeded but spike guard rolled back all-critics batches for `project_hail_mary` (73 inserts) and `they_will_kill_you` (72 inserts) — threshold of 50 too aggressive for fresh DB
+5. Fixed spike guard: skip when `existing_count < INSERT_SPIKE_THRESHOLD` (not enough existing reviews to indicate hash collision)
+6. Smoke test #2: spike guard still triggered — existing_count was 16 (top-critics from first run), still > 0 but < threshold logic needed refinement
+7. Final fix: `existing_count >= INSERT_SPIKE_THRESHOLD and inserted_batch > INSERT_SPIKE_THRESHOLD`
+8. Smoke test #3: clean run. All 4 movies fully populated, zero errors, zero spike triggers
+
+### Key Values
+| Value | Used In |
+|---|---|
+| Job name: `rt-scraper` | Steps 08, 09, 11 |
+| Region: `us-east1` | Steps 08, 09 |
+| Timeout: 900s | Reference |
+| Service account: `1065819890045-compute@developer.gserviceaccount.com` | Step 08 |
+
+### Notes
+- Timeout set to 900s (plan review increased from 600s for 8 Selenium sessions)
+- Spike guard fix required 2 iterations: `> 0` check insufficient, needed `>= threshold` comparison
+- All 4 movies now populated in Neon: project_hail_mary, ready_or_not_2_here_i_come, forbidden_fruits_2026, they_will_kill_you
 
 ## Step 08: Cloud Scheduler — PENDING
 

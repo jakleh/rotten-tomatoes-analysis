@@ -1,0 +1,14 @@
+reviews.db
+reviews.db-shm
+reviews.db-wal
+reviews.db.bak
+scraper.log
+*.csv
+.git
+__pycache__
+tests/
+scripts/
+plan/
+deploy/
+.github/
+*.md

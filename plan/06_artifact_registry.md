@@ -37,19 +37,19 @@ SHA=$(git rev-parse HEAD)
 echo $SHA
 ```
 
-Build and tag:
+Build, tag, and push (single command):
 ```bash
-docker build \
+docker buildx build --platform linux/amd64 \
   -t us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:latest \
   -t us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:${SHA} \
+  --push \
   .
 ```
 
-Push both tags:
-```bash
-docker push us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:latest
-docker push us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper:${SHA}
-```
+**IMPORTANT**: Cloud Run requires `linux/amd64` images. On Apple Silicon Macs, you MUST use
+`--platform linux/amd64` — a plain `docker build` produces ARM images that Cloud Run rejects
+with: `Container manifest type must support amd64/linux`. GitHub Actions builds on amd64
+runners natively, so this flag is only needed for local builds.
 
 Verify the image exists in Artifact Registry:
 ```bash

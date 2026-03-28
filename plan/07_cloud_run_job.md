@@ -15,7 +15,7 @@ gcloud run jobs create rt-scraper \
   --set-env-vars=CHROME_BIN=/usr/bin/chromium \
   --memory=2Gi \
   --cpu=1 \
-  --task-timeout=600s \
+  --task-timeout=900s \
   --max-retries=1 \
   --project=rotten-tomatoes-scraper
 ```
@@ -24,8 +24,8 @@ Parameter notes:
 - `--memory=2Gi`: Chrome + Python + BeautifulSoup needs ~800MB-1.2GB peak. 2GB gives headroom.
   The old VM (1GB RAM + 2GB swap) was regularly hitting swap — this removes that problem.
 - `--cpu=1`: 1 vCPU is sufficient. Chrome doesn't parallelize significantly.
-- `--task-timeout=600s`: 10 minutes. A full scrape of 4 movies takes ~5-8 minutes.
-  If a run exceeds 10 minutes, something is wrong (hung Chrome, infinite loop) — kill it.
+- `--task-timeout=900s`: 15 minutes. A full scrape of 4 movies takes ~5-8 minutes, but 8 Selenium
+  sessions can exceed 10 min. If a run exceeds 15 minutes, something is wrong — kill it.
 - `--max-retries=1`: If a job fails, retry once. After 2 failures, Cloud Scheduler logs
   the error. This handles transient Neon cold starts or RT network blips.
 - `--set-secrets`: Injects DATABASE_URL from Secret Manager as an environment variable.
@@ -92,7 +92,7 @@ Or in Cloud Console: Cloud Run → Jobs → rt-scraper → Executions → select
     --region=us-east1
   ```
 
-**Job times out (600s exceeded)**
+**Job times out (900s exceeded)**
 - A movie page with hundreds of reviews may take longer
 - Increase timeout: `gcloud run jobs update rt-scraper --task-timeout=1200s --region=us-east1`
 - Or reduce enabled movies in movies.json

@@ -450,6 +450,14 @@ def scrape(movie_slug: str) -> None:
     # Phase 2: Connect to DB and batch insert
     conn = get_db_connection()
     try:
+        # Check existing review count for spike guard context.
+        # On a fresh DB (0 existing reviews), all inserts are expected — skip the guard.
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM reviews WHERE movie_slug = %s", (movie_slug,)
+        )
+        existing_count = cur.fetchone()[0]
+
         inserted_total = 0
         for critic_filter, reviews in all_reviews:
             inserted_batch = 0
@@ -465,7 +473,10 @@ def scrape(movie_slug: str) -> None:
             # Spike guard: if insert count is abnormally high, a selector likely
             # broke (changing hash inputs → new hashes for every existing review).
             # Rollback instead of committing bad data.
-            if inserted_batch > INSERT_SPIKE_THRESHOLD:
+            # Skip when existing reviews < threshold — not enough to collide with,
+            # so a large batch is legitimate (fresh DB or newly added movie).
+            if (existing_count >= INSERT_SPIKE_THRESHOLD
+                    and inserted_batch > INSERT_SPIKE_THRESHOLD):
                 log.error(
                     "INSERT SPIKE: %d inserts for %s (%s) exceeds threshold %d. "
                     "Possible selector breakage changing dedup hashes. "
