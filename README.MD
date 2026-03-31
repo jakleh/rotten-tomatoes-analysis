@@ -83,7 +83,7 @@ DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie projec
 uv run --group dev pytest tests/ -v
 ```
 
-All 45 tests use mocks -- no network, browser, or database required.
+All 50 tests use mocks -- no network, browser, or database required.
 
 ## Deployment
 
@@ -109,6 +109,7 @@ The workflow triggers when these files change: `rotten_tomatoes.py`, `movies.jso
 | Artifact Registry | `us-east1-docker.pkg.dev/rotten-tomatoes-scraper/rt-scraper/rt-scraper` |
 | Secret Manager | `DATABASE_URL` (Neon connection string) |
 | Database | Neon project `rotten-tomatoes`, database `neondb` |
+| Monitoring | Log-based metric + 2 alert policies → email on ERRORs and job failures |
 
 ### Docker
 
@@ -128,7 +129,7 @@ docker run --rm -e DATABASE_URL="postgresql://..." rt-scraper:local
 ├── Dockerfile                   # Python 3.14 + Chromium + ChromeDriver
 ├── .dockerignore                # Excludes non-runtime files from image
 ├── tests/
-│   └── test_rotten_tomatoes.py  # 45 tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # 50 tests (pure logic, no network/browser)
 ├── scripts/
 │   └── backfill.py              # One-time historical review backfill
 ├── .github/

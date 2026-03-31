@@ -14,10 +14,20 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ├── scripts/
 │   └── backfill.py             # One-time backfill of historical reviews (run locally)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 45 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 50 tests (all pure logic, no network/browser)
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # GitHub Actions: build image, push to AR, update Cloud Run Job
+├── plan/
+│   └── errors/                 # Error playbooks with decision trees
+│       ├── chrome.md           # Chrome/ChromeDriver failures
+│       ├── cloud_run.md        # Cloud Run Job execution failures
+│       ├── cloud_scheduler.md  # Cloud Scheduler trigger failures
+│       ├── github_actions.md   # GitHub Actions CI/CD failures
+│       ├── html_parsing.md     # RT HTML parsing errors
+│       ├── monitoring.md       # Monitoring/alerting failures
+│       ├── neon.md             # Neon database connection errors
+│       └── selenium.md         # Selenium page load & interaction failures
 ├── pyproject.toml              # Dependencies (uv managed, Python >=3.14)
 ├── .gitignore
 ├── README.MD                   # Project documentation
@@ -61,12 +71,12 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Spike guard** -- If a single batch inserts more than `INSERT_SPIKE_THRESHOLD` (50) reviews AND the movie already has 50+ existing reviews, rollback instead of committing (likely selector breakage creating new hashes for every existing review). Skipped for fresh DB / newly added movies.
 - **Deduplication** -- MD5 hash of `(movie_slug + reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via Postgres UNIQUE constraint.
 - **Timestamp utilities** -- Robust regex `r'^(\d+)\s*(m|min|h|hr|d|day)s?$'` with `UNIT_ALIASES` mapping. `convert_rel_timestamp_to_abs()` takes `scrape_time` param for consistency within a scrape run. Year heuristic rolls back when parsed date is in the future.
-- **Logging** -- Console only (StreamHandler). Cloud Run captures stdout/stderr automatically.
+- **Logging** -- JSON structured logging via `_CloudRunFormatter`. Emits `{"severity", "message", "time"}` per line so Cloud Run auto-maps severity to Cloud Logging. Handles tracebacks via `record.exc_info`.
 - **Multi-movie config** -- `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides config.
 - **Run mode traceability** -- Logs `"=== Run started: mode=scheduled/manual, movies=[...] ==="` at start of every run.
 - **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10. Run locally with `DATABASE_URL` set. Supports `--movie`, `--dry-run`.
 - **CI/CD** -- `.github/workflows/deploy.yml` builds Docker image on push to main, pushes to Artifact Registry (tagged with commit SHA + `latest`), updates Cloud Run Job. Import sanity check (`python -c "import rotten_tomatoes"`) runs before push to catch broken images. Uses Workload Identity Federation (no stored keys).
-- **45 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, and movie config loading. All use mocks, no network/browser.
+- **50 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, and JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII). All use mocks, no network/browser.
 
 ## Database Schema
 
@@ -141,6 +151,11 @@ docker build -t rt-scraper:local .
 - **CI/CD auth**: Workload Identity Federation -- pool `github`, provider `github-actions`
 - **GitHub secrets**: `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`
 - **Neon**: Project `rotten-tomatoes` in `us-east-1` (AWS Virginia), database `neondb`
+- **Monitoring**:
+  - Log-based metric: `rt-scraper-errors` (counts `severity>=ERROR` from Cloud Run Job logs)
+  - Alert policy: `RT Scraper ERROR Alert` (emails on any ERROR log, 10-min alignment)
+  - Alert policy: `RT Scraper Job Failure Alert` (emails on job execution failures — OOM, timeout, image pull)
+  - Notification channel: `RT Scraper Email` (email to `jslehner16@gmail.com`)
 
 ## Dependencies
 
@@ -175,7 +190,6 @@ Track known improvements or deferred work here. Remove items as they're complete
 1. Normalize subjective scores into a 0-1 scale
 2. Add mocked HTTP boundary tests for `_parse_cards()`
 3. Add Postgres integration tests (currently deferred -- all tests are pure logic)
-4. Set up Cloud Monitoring alert on Cloud Run Job execution failures (replaced old Ops Agent + Cloud Logging alert)
 
 ## Security Decisions & Tradeoffs
 
