@@ -7,7 +7,7 @@ __pycache__/
 .python-version
 
 # Scraper outputs
-reviews.db
+reviews.db*
 scraper.log
 cron.log
 *.csv
