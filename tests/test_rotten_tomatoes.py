@@ -2,10 +2,12 @@
 Tests for rotten_tomatoes.py
 
 Covers: timestamp utilities (including robust regex), MD5 hashing, movie config
-loading, and selector helper -- all without hitting the network or launching a
-browser. DB tests deferred until migration is complete.
+loading, selector helper, and JSON log formatter -- all without hitting the
+network or launching a browser. DB tests deferred until migration is complete.
 """
 
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from bs4 import BeautifulSoup
 
 from rotten_tomatoes import (
     SELECTORS,
+    _CloudRunFormatter,
     _find_selector,
     compute_review_id,
     convert_rel_timestamp_to_abs,
@@ -274,3 +277,55 @@ class TestLoadMovieConfig:
         config.write_text('{"slug": "movie_a"}')
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
             assert load_movie_config() == []
+
+
+# -- _CloudRunFormatter --------------------------------------------------------
+
+class TestCloudRunFormatter:
+    def _make_record(self, level, msg, exc_info=None):
+        record = logging.LogRecord(
+            name="test", level=level, pathname="", lineno=0,
+            msg=msg, args=(), exc_info=exc_info,
+        )
+        return record
+
+    def test_outputs_valid_json(self):
+        fmt = _CloudRunFormatter()
+        record = self._make_record(logging.INFO, "hello")
+        line = fmt.format(record)
+        parsed = json.loads(line)
+        assert "severity" in parsed
+        assert "message" in parsed
+        assert "time" in parsed
+
+    def test_severity_matches_level_name(self):
+        fmt = _CloudRunFormatter()
+        for level, name in [(logging.INFO, "INFO"), (logging.WARNING, "WARNING"), (logging.ERROR, "ERROR")]:
+            record = self._make_record(level, "test")
+            parsed = json.loads(fmt.format(record))
+            assert parsed["severity"] == name
+
+    def test_message_content(self):
+        fmt = _CloudRunFormatter()
+        record = self._make_record(logging.INFO, "scrape started")
+        parsed = json.loads(fmt.format(record))
+        assert parsed["message"] == "scrape started"
+
+    def test_traceback_included(self):
+        fmt = _CloudRunFormatter()
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            import sys
+            record = self._make_record(logging.ERROR, "failed", exc_info=sys.exc_info())
+        line = fmt.format(record)
+        parsed = json.loads(line)
+        assert "ValueError: boom" in parsed["message"]
+        assert "Traceback" in parsed["message"]
+
+    def test_non_ascii_message(self):
+        fmt = _CloudRunFormatter()
+        record = self._make_record(logging.INFO, "review by Jos\u00e9 \u2014 5\u2605")
+        line = fmt.format(record)
+        parsed = json.loads(line)
+        assert "Jos\u00e9" in parsed["message"]

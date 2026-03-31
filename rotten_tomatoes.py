@@ -28,10 +28,24 @@ from selenium.common.exceptions import TimeoutException, ElementClickIntercepted
 
 # -- Logging -------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+
+class _CloudRunFormatter(logging.Formatter):
+    """Emit one JSON object per line for Cloud Run severity mapping."""
+
+    def format(self, record):
+        msg = record.getMessage()
+        if record.exc_info:
+            msg += "\n" + self.formatException(record.exc_info)
+        return json.dumps({
+            "severity": record.levelname,
+            "message": msg,
+            "time": self.formatTime(record),
+        })
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_CloudRunFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 log = logging.getLogger(__name__)
 
 
