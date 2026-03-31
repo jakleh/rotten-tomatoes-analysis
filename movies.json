@@ -4,7 +4,7 @@
   {"slug": "forbidden_fruits_2026", "enabled": true},
   {"slug": "they_will_kill_you", "enabled": true},
   {"slug": "the_super_mario_galaxy_movie", "enabled": false},
-  {"slug": "the_drama", "enabled": false},
+  {"slug": "the_drama", "enabled": true},
   {"slug": "the_odyssey_2026", "enabled": false},
   {"slug": "avengers_doomsday", "enabled": false},
   {"slug": "mother_mary", "enabled": false},
