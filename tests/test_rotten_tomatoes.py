@@ -8,6 +8,8 @@ network or launching a browser. DB tests deferred until migration is complete.
 
 import json
 import logging
+import os
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -23,6 +25,10 @@ from rotten_tomatoes import (
     get_timestamp_unit,
     load_movie_config,
 )
+
+# Add scripts/ to path so we can import backfill module
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+from backfill import filter_reviews_by_cutoff, main as backfill_main
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -329,3 +335,70 @@ class TestCloudRunFormatter:
         line = fmt.format(record)
         parsed = json.loads(line)
         assert "Jos\u00e9" in parsed["message"]
+
+
+# -- filter_reviews_by_cutoff --------------------------------------------------
+
+CUTOFF = datetime(2026, 3, 1, 0, 0, 0, tzinfo=timezone.utc)  # midnight UTC Mar 1
+
+
+def _review(ts):
+    """Helper: minimal review dict with given estimated_timestamp."""
+    return {"estimated_timestamp": ts, "unique_review_id": "x"}
+
+
+class TestFilterReviewsByCutoff:
+    def test_includes_reviews_before_cutoff(self):
+        reviews = [_review(datetime(2026, 2, 15, tzinfo=timezone.utc))]
+        assert len(filter_reviews_by_cutoff(reviews, CUTOFF)) == 1
+
+    def test_excludes_reviews_after_cutoff(self):
+        reviews = [_review(datetime(2026, 3, 15, tzinfo=timezone.utc))]
+        assert len(filter_reviews_by_cutoff(reviews, CUTOFF)) == 0
+
+    def test_includes_reviews_on_end_date(self):
+        # 23:59:59 on Feb 28 (day before cutoff) should be included
+        reviews = [_review(datetime(2026, 2, 28, 23, 59, 59, tzinfo=timezone.utc))]
+        assert len(filter_reviews_by_cutoff(reviews, CUTOFF)) == 1
+
+    def test_excludes_reviews_at_exact_cutoff(self):
+        reviews = [_review(CUTOFF)]
+        assert len(filter_reviews_by_cutoff(reviews, CUTOFF)) == 0
+
+    def test_excludes_none_timestamps(self):
+        reviews = [_review(None)]
+        assert len(filter_reviews_by_cutoff(reviews, CUTOFF)) == 0
+
+    def test_empty_input(self):
+        assert filter_reviews_by_cutoff([], CUTOFF) == []
+
+    def test_all_excluded(self):
+        reviews = [
+            _review(datetime(2026, 4, 1, tzinfo=timezone.utc)),
+            _review(datetime(2026, 5, 1, tzinfo=timezone.utc)),
+        ]
+        assert len(filter_reviews_by_cutoff(reviews, CUTOFF)) == 0
+
+    def test_mixed_reviews(self):
+        reviews = [
+            _review(datetime(2026, 2, 1, tzinfo=timezone.utc)),   # before -> kept
+            _review(datetime(2026, 3, 15, tzinfo=timezone.utc)),  # after -> excluded
+            _review(None),                                         # None -> excluded
+            _review(datetime(2026, 2, 28, tzinfo=timezone.utc)),  # before -> kept
+        ]
+        result = filter_reviews_by_cutoff(reviews, CUTOFF)
+        assert len(result) == 2
+
+
+# -- Backfill argparse validation ----------------------------------------------
+
+class TestBackfillArgparse:
+    def test_time_end_requires_movie(self):
+        with patch("sys.argv", ["backfill.py", "--time-end", "2026-02-21"]):
+            with pytest.raises(SystemExit):
+                backfill_main()
+
+    def test_time_end_invalid_format(self):
+        with patch("sys.argv", ["backfill.py", "--movie", "test", "--time-end", "bad"]):
+            with pytest.raises(SystemExit):
+                backfill_main()

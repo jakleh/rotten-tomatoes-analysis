@@ -14,6 +14,9 @@ Usage:
 
     # Dry run (report only, no writes)
     DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --dry-run
+
+    # Exclude reviews after a date (requires --movie)
+    DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --time-end 2026-02-21
 """
 
 import argparse
@@ -22,7 +25,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -198,7 +201,18 @@ def get_all_reviews(
     return reviews
 
 
-def backfill_movie(movie_slug: str, conn, dry_run: bool = False) -> dict:
+def filter_reviews_by_cutoff(reviews: list[dict], time_end_cutoff: datetime) -> list[dict]:
+    """Filter reviews to only those with estimated_timestamp before cutoff.
+    Reviews with estimated_timestamp=None are excluded.
+    """
+    return [
+        r for r in reviews
+        if r["estimated_timestamp"] is not None
+        and r["estimated_timestamp"] < time_end_cutoff
+    ]
+
+
+def backfill_movie(movie_slug: str, conn, dry_run: bool = False, time_end_cutoff: datetime | None = None) -> dict:
     """Backfill all reviews for a single movie.
 
     Returns a stats dict: {inserted, skipped, errors}.
@@ -220,6 +234,22 @@ def backfill_movie(movie_slug: str, conn, dry_run: bool = False) -> dict:
             continue
         log.info("Got %d reviews from %s / %s", len(reviews), movie_slug, critic_filter)
         all_reviews.extend(reviews)
+
+    # Filter by time_end_cutoff if provided
+    if time_end_cutoff is not None:
+        total_before = len(all_reviews)
+        none_count = sum(1 for r in all_reviews if r["estimated_timestamp"] is None)
+        all_reviews = filter_reviews_by_cutoff(all_reviews, time_end_cutoff)
+        excluded = total_before - len(all_reviews)
+        log.info(
+            "Filtered %d reviews: kept %d, excluded %d (cutoff %s)",
+            total_before, len(all_reviews), excluded, time_end_cutoff.isoformat(),
+        )
+        if total_before > 0 and none_count / total_before > 0.10:
+            log.warning(
+                "%d of %d reviews (%.0f%%) had None timestamps and were excluded",
+                none_count, total_before, 100 * none_count / total_before,
+            )
 
     # Phase 2: Insert into DB
     seen_ids = set()
@@ -288,12 +318,26 @@ def main():
     parser = argparse.ArgumentParser(description="Backfill historical reviews into Neon.")
     parser.add_argument("--movie", help="Single movie slug (default: all enabled)")
     parser.add_argument("--dry-run", action="store_true", help="Report only, no writes")
+    parser.add_argument("--time-end", help="Exclude reviews after this date (YYYY-MM-DD)")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    # Validate --time-end
+    time_end_cutoff = None
+    if args.time_end:
+        if not args.movie:
+            parser.error("--time-end requires --movie")
+        try:
+            end_date = datetime.strptime(args.time_end, "%Y-%m-%d")
+        except ValueError:
+            parser.error(f"invalid date format '{args.time_end}', expected YYYY-MM-DD")
+        time_end_cutoff = datetime(
+            end_date.year, end_date.month, end_date.day, tzinfo=timezone.utc
+        ) + timedelta(days=1)
 
     if "DATABASE_URL" not in os.environ:
         log.error("DATABASE_URL environment variable is required.")
@@ -309,6 +353,8 @@ def main():
 
     print(f"\n  Movies:    {', '.join(slugs)}")
     print(f"  Dry run:   {args.dry_run}")
+    if time_end_cutoff:
+        print(f"  Time end:  {args.time_end} (exclude reviews after {time_end_cutoff.isoformat()})")
     print()
 
     confirm = input("  Proceed? [y/N] ").strip().lower()
@@ -322,13 +368,17 @@ def main():
 
     for slug in slugs:
         log.info("=== Backfilling %s ===", slug)
-        stats = backfill_movie(slug, conn, dry_run=args.dry_run)
+        stats = backfill_movie(slug, conn, dry_run=args.dry_run, time_end_cutoff=time_end_cutoff)
         for k in totals:
             totals[k] += stats[k]
         log.info("  %s: %s", slug, stats)
 
-    # Post-run health check (skip on dry run)
-    if not args.dry_run:
+    # Post-run health check (skip on dry run or --time-end)
+    if args.dry_run:
+        pass  # no health check on dry run
+    elif time_end_cutoff:
+        log.info("Skipping health check: --time-end filtering makes count comparison meaningless")
+    else:
         log.info("=== Running health checks ===")
         for slug in slugs:
             health_check(slug, conn)
@@ -338,6 +388,10 @@ def main():
     print(f"\n  Totals: {totals}")
     if args.dry_run:
         print("  (dry run -- no changes written)")
+    if time_end_cutoff:
+        print("\n  Verify in psql (should return 0):")
+        for slug in slugs:
+            print(f"    SELECT COUNT(*) FROM reviews WHERE movie_slug = '{slug}' AND estimated_timestamp >= '{time_end_cutoff.isoformat()}';")
 
 
 if __name__ == "__main__":

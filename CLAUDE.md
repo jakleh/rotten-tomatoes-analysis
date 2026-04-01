@@ -14,7 +14,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ├── scripts/
 │   └── backfill.py             # One-time backfill of historical reviews (run locally)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 50 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 60 tests (all pure logic, no network/browser)
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # GitHub Actions: build image, push to AR, update Cloud Run Job
@@ -25,6 +25,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 │       ├── cloud_scheduler.md  # Cloud Scheduler trigger failures
 │       ├── github_actions.md   # GitHub Actions CI/CD failures
 │       ├── html_parsing.md     # RT HTML parsing errors
+│       ├── backfill.md         # Backfill script failures
 │       ├── monitoring.md       # Monitoring/alerting failures
 │       ├── neon.md             # Neon database connection errors
 │       └── selenium.md         # Selenium page load & interaction failures
@@ -74,9 +75,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Logging** -- JSON structured logging via `_CloudRunFormatter`. Emits `{"severity", "message", "time"}` per line so Cloud Run auto-maps severity to Cloud Logging. Handles tracebacks via `record.exc_info`.
 - **Multi-movie config** -- `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides config.
 - **Run mode traceability** -- Logs `"=== Run started: mode=scheduled/manual, movies=[...] ==="` at start of every run.
-- **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10. Run locally with `DATABASE_URL` set. Supports `--movie`, `--dry-run`.
+- **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10. Run locally with `DATABASE_URL` set. Supports `--movie`, `--dry-run`, `--time-end YYYY-MM-DD` (exclude reviews after a date; requires `--movie`; skips health check).
 - **CI/CD** -- `.github/workflows/deploy.yml` builds Docker image on push to main, pushes to Artifact Registry (tagged with commit SHA + `latest`), updates Cloud Run Job. Import sanity check (`python -c "import rotten_tomatoes"`) runs before push to catch broken images. Uses Workload Identity Federation (no stored keys).
-- **50 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, and JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII). All use mocks, no network/browser.
+- **60 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), and backfill argparse validation (`--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
 
 ## Database Schema
 
@@ -134,6 +135,9 @@ uv run --group dev pytest tests/ -v
 # Backfill historical reviews (run locally, not via Cloud Run)
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --dry-run
+
+# Backfill with time cutoff (exclude reviews after a date)
+DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --time-end 2026-02-21
 
 # Build Docker image locally
 docker build -t rt-scraper:local .

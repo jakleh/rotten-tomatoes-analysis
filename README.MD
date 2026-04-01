@@ -75,6 +75,9 @@ DATABASE_URL="postgresql://..." uv run python rotten_tomatoes.py --movie project
 # Backfill historical reviews
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --dry-run
+
+# Backfill with time cutoff (exclude reviews after a date, requires --movie)
+DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --time-end 2026-02-21
 ```
 
 ## Testing
@@ -83,7 +86,7 @@ DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie projec
 uv run --group dev pytest tests/ -v
 ```
 
-All 50 tests use mocks -- no network, browser, or database required.
+All 60 tests use mocks -- no network, browser, or database required.
 
 ## Deployment
 
@@ -129,7 +132,7 @@ docker run --rm -e DATABASE_URL="postgresql://..." rt-scraper:local
 ├── Dockerfile                   # Python 3.14 + Chromium + ChromeDriver
 ├── .dockerignore                # Excludes non-runtime files from image
 ├── tests/
-│   └── test_rotten_tomatoes.py  # 50 tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # 60 tests (pure logic, no network/browser)
 ├── scripts/
 │   └── backfill.py              # One-time historical review backfill
 ├── .github/
