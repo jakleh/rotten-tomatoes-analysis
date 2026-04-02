@@ -12,14 +12,18 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ├── Dockerfile                  # Python 3.14 + Chromium + ChromeDriver
 ├── .dockerignore               # Excludes tests, scripts, plan, docs from image
 ├── scripts/
-│   └── backfill.py             # One-time backfill of historical reviews (run locally)
+│   ├── backfill.py             # One-time backfill of historical reviews (run locally)
+│   └── backfill_movies.csv     # Backfill movie slugs (gitignored, local only)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 60 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 67 tests (all pure logic, no network/browser)
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # GitHub Actions: build image, push to AR, update Cloud Run Job
 ├── plan/
+│   ├── new_feature_protocol.md # Plan -> Simulate Errors -> Implement -> Validate workflow
+│   ├── backfill_anti_blocking.md # Plan doc for anti-blocking mitigations
 │   └── errors/                 # Error playbooks with decision trees
+│       ├── anti_blocking.md    # Anti-blocking & rate limiting failures
 │       ├── chrome.md           # Chrome/ChromeDriver failures
 │       ├── cloud_run.md        # Cloud Run Job execution failures
 │       ├── cloud_scheduler.md  # Cloud Scheduler trigger failures
@@ -65,7 +69,7 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **`scrape(movie_slug)`** -- Orchestrates scraping for a single movie. Two-pass (top-critics, all-critics). "Connect late" pattern: scrapes into memory, connects to Neon only for batch insert. Spike guard rolls back if insert count exceeds threshold (possible selector breakage).
 - **`_parse_cards()`** -- Extracts review data from BeautifulSoup cards. WARNING per-card for missing fields, ERROR if a critical field is NULL across ALL cards.
 - **`_find_selector()`** -- Uses centralized `SELECTORS` dict for all BeautifulSoup lookups. Single place to update if RT HTML changes.
-- **`_build_driver()`** -- Headless Chromium with `--no-sandbox`, `--disable-dev-shm-usage`, `--js-flags=--max-old-space-size=256`, `--disable-blink-features=AutomationControlled`. Page load timeout 30s, script timeout 15s.
+- **`_build_driver()`** -- Headless Chromium with `--no-sandbox`, `--disable-dev-shm-usage`, `--js-flags=--max-old-space-size=256`, `--disable-blink-features=AutomationControlled`, realistic User-Agent (`Chrome/134.0.0.0`). Page load timeout 30s, script timeout 15s.
 - **Retry loop** -- 3 attempts for `driver.get(url)`, 5s between retries. WARNING on retry, ERROR if all fail. Returns `[]` for that movie (others proceed).
 - **Load More stall detection** -- Tracks card count before/after click, bails after 2 consecutive no-change clicks.
 - **Postgres layer** -- `get_db_connection()` uses `DATABASE_URL` env var with `connect_timeout=10`. `insert_review()` uses `ON CONFLICT DO NOTHING` for idempotent dedup.
@@ -75,9 +79,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Logging** -- JSON structured logging via `_CloudRunFormatter`. Emits `{"severity", "message", "time"}` per line so Cloud Run auto-maps severity to Cloud Logging. Handles tracebacks via `record.exc_info`.
 - **Multi-movie config** -- `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides config.
 - **Run mode traceability** -- Logs `"=== Run started: mode=scheduled/manual, movies=[...] ==="` at start of every run.
-- **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10. Run locally with `DATABASE_URL` set. Supports `--movie`, `--dry-run`, `--time-end YYYY-MM-DD` (exclude reviews after a date; requires `--movie`; skips health check).
+- **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10. Run locally with `DATABASE_URL` set. CLI: `--movie <slug>` (single movie) or `--all` (batch from `scripts/backfill_movies.csv`) — one is required, they're mutually exclusive. Also supports `--dry-run`, `--time-end YYYY-MM-DD` (exclude reviews after a date; requires `--movie`; skips health check). Anti-blocking: randomized click timing (`uniform(2, 5)`), 30s inter-movie delay in batch mode, page source logging on 0 cards found.
 - **CI/CD** -- `.github/workflows/deploy.yml` builds Docker image on push to main, pushes to Artifact Registry (tagged with commit SHA + `latest`), updates Cloud Run Job. Import sanity check (`python -c "import rotten_tomatoes"`) runs before push to catch broken images. Uses Workload Identity Federation (no stored keys).
-- **60 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), and backfill argparse validation (`--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
+- **67 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), backfill CSV config loading (parsing, blank lines, whitespace, missing file, empty), and backfill argparse validation (`--movie`/`--all` mutual exclusion, neither flag, `--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
 
 ## Database Schema
 
@@ -133,10 +137,13 @@ DATABASE_URL="postgresql://..." uv run python rotten_tomatoes.py --movie project
 uv run --group dev pytest tests/ -v
 
 # Backfill historical reviews (run locally, not via Cloud Run)
-DATABASE_URL="postgresql://..." uv run python scripts/backfill.py
+DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --dry-run
 
-# Backfill with time cutoff (exclude reviews after a date)
+# Backfill all movies from CSV (scripts/backfill_movies.csv)
+DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --all
+
+# Backfill with time cutoff (exclude reviews after a date, requires --movie)
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --time-end 2026-02-21
 
 # Build Docker image locally
