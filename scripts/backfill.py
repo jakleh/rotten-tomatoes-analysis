@@ -238,7 +238,11 @@ def backfill_movie(movie_slug: str, conn, dry_run: bool = False, time_end_cutoff
 
     # Phase 1: Scrape all reviews into memory
     all_reviews = []
-    for critic_filter in CRITIC_FILTERS:
+    for i, critic_filter in enumerate(CRITIC_FILTERS):
+        if i > 0:
+            delay = random.uniform(5, 15)
+            log.info("Waiting %.1fs before next critic filter...", delay)
+            time.sleep(delay)
         log.info("Scraping %s / %s ...", movie_slug, critic_filter)
         try:
             reviews = get_all_reviews(movie_slug, critic_filter)

@@ -44,6 +44,7 @@
 
 **J-4 (click timing):**
 - Current: `uniform(2, 5)` after click, `uniform(0.5, 1.5)` before click
+- Inter-filter delay: `uniform(5, 15)` between top-critics and all-critics passes for the same movie
 - If detection suspected: widen to `uniform(3, 8)` after click
 - If backfill is too slow and detection is not occurring: narrow to `uniform(1.5, 3)`
 
