@@ -165,6 +165,10 @@ docker build -t rt-scraper:local .
 
 `pyproject.toml`: beautifulsoup4, selenium, psycopg2-binary. Dev: pytest.
 
+## Workflow: New Feature Protocol
+
+For any non-trivial feature, follow the protocol in [`plan/new_feature_protocol.md`](plan/new_feature_protocol.md): **Plan -> Simulate Errors -> Implement -> Validate**. This means writing a plan doc, creating/updating an error playbook in `plan/errors/`, implementing, then walking the error playbook against the code to catch gaps. Do not skip the error simulation phase.
+
 ## Workflow: Milestone Checklist
 
 After completing any non-trivial task, walk through this checklist with the user before considering the work done.

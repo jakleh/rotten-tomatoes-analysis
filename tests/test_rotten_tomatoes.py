@@ -28,7 +28,7 @@ from rotten_tomatoes import (
 
 # Add scripts/ to path so we can import backfill module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from backfill import filter_reviews_by_cutoff, main as backfill_main
+from backfill import filter_reviews_by_cutoff, load_backfill_config, BACKFILL_CSV_PATH, main as backfill_main
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -392,9 +392,49 @@ class TestFilterReviewsByCutoff:
 
 # -- Backfill argparse validation ----------------------------------------------
 
+class TestLoadBackfillConfig:
+    def test_loads_slugs_from_csv(self, tmp_path):
+        csv_file = tmp_path / "backfill_movies.csv"
+        csv_file.write_text("slug\nproject_hail_mary\nthunderbolts\n")
+        with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
+            assert load_backfill_config() == ["project_hail_mary", "thunderbolts"]
+
+    def test_skips_blank_lines(self, tmp_path):
+        csv_file = tmp_path / "backfill_movies.csv"
+        csv_file.write_text("slug\nproject_hail_mary\n\nthunderbolts\n")
+        with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
+            assert load_backfill_config() == ["project_hail_mary", "thunderbolts"]
+
+    def test_strips_whitespace(self, tmp_path):
+        csv_file = tmp_path / "backfill_movies.csv"
+        csv_file.write_text("slug\n  project_hail_mary  \n")
+        with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
+            assert load_backfill_config() == ["project_hail_mary"]
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        with patch("backfill.BACKFILL_CSV_PATH", str(tmp_path / "nope.csv")):
+            assert load_backfill_config() == []
+
+    def test_empty_csv_returns_empty(self, tmp_path):
+        csv_file = tmp_path / "backfill_movies.csv"
+        csv_file.write_text("slug\n")
+        with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
+            assert load_backfill_config() == []
+
+
 class TestBackfillArgparse:
+    def test_neither_movie_nor_all_exits(self):
+        with patch("sys.argv", ["backfill.py"]):
+            with pytest.raises(SystemExit):
+                backfill_main()
+
+    def test_movie_and_all_mutually_exclusive(self):
+        with patch("sys.argv", ["backfill.py", "--movie", "test", "--all"]):
+            with pytest.raises(SystemExit):
+                backfill_main()
+
     def test_time_end_requires_movie(self):
-        with patch("sys.argv", ["backfill.py", "--time-end", "2026-02-21"]):
+        with patch("sys.argv", ["backfill.py", "--all", "--time-end", "2026-02-21"]):
             with pytest.raises(SystemExit):
                 backfill_main()
 

@@ -221,6 +221,10 @@ def _build_driver() -> webdriver.Chrome:
     options.add_argument("--disable-plugins")
     options.add_argument("--js-flags=--max-old-space-size=256")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument(
+        "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+    )
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
         options.binary_location = chrome_bin

@@ -6,22 +6,24 @@ One-time script -- run locally with DATABASE_URL set. Not run via Cloud Run
 date-format timestamps.
 
 Usage:
-    # All enabled movies in movies.json
-    DATABASE_URL="postgresql://..." uv run python scripts/backfill.py
-
-    # Single movie
+    # Single movie (required: --movie or --all)
     DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary
 
+    # All movies from scripts/backfill_movies.csv
+    DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --all
+
     # Dry run (report only, no writes)
-    DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --dry-run
+    DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --dry-run
 
     # Exclude reviews after a date (requires --movie)
     DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --time-end 2026-02-21
 """
 
 import argparse
+import csv
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -49,8 +51,20 @@ from rotten_tomatoes import (
     get_db_connection,
     get_timestamp_unit,
     insert_review,
-    load_movie_config,
 )
+
+BACKFILL_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backfill_movies.csv")
+
+
+def load_backfill_config() -> list[str]:
+    """Read movie slugs from backfill_movies.csv."""
+    if not os.path.exists(BACKFILL_CSV_PATH):
+        log.error("Backfill CSV not found: %s", BACKFILL_CSV_PATH)
+        return []
+    with open(BACKFILL_CSV_PATH, newline="") as f:
+        reader = csv.DictReader(f)
+        slugs = [row["slug"].strip() for row in reader if row.get("slug", "").strip()]
+    return slugs
 
 log = logging.getLogger("backfill")
 
@@ -107,11 +121,11 @@ def get_all_reviews(
                 driver.execute_script(
                     "arguments[0].scrollIntoView({block: 'center'});", btn
                 )
-                time.sleep(1)
+                time.sleep(random.uniform(0.5, 1.5))
                 driver.execute_script("arguments[0].click();", btn)
                 page_count += 1
                 log.debug("Clicked 'Load More' (page %d)", page_count)
-                time.sleep(3)
+                time.sleep(random.uniform(2, 5))
 
                 # Stall detection: bail after 2 consecutive clicks that add no cards
                 soup = BeautifulSoup(driver.page_source, "html.parser")
@@ -143,6 +157,9 @@ def get_all_reviews(
             "Found %d total review cards for %s (%s)",
             len(cards), movie_slug, critic_filter,
         )
+        if len(cards) == 0:
+            snippet = driver.page_source[:500] if driver.page_source else "(empty)"
+            log.warning("0 cards found. Page source snippet:\n%s", snippet)
     except Exception as e:
         log.error("Selenium error for %s (%s): %s", movie_slug, critic_filter, e)
         return []
@@ -279,8 +296,8 @@ def health_check(movie_slug: str, conn) -> None:
     """Compare RT's total review count against DB count. ERROR if delta > 10."""
     url = f"https://www.rottentomatoes.com/m/{movie_slug}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
     }
     try:
         req = Request(url, headers=headers)
@@ -316,7 +333,9 @@ def health_check(movie_slug: str, conn) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill historical reviews into Neon.")
-    parser.add_argument("--movie", help="Single movie slug (default: all enabled)")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--movie", help="Single movie slug to backfill")
+    group.add_argument("--all", action="store_true", help="Backfill all movies from backfill_movies.csv")
     parser.add_argument("--dry-run", action="store_true", help="Report only, no writes")
     parser.add_argument("--time-end", help="Exclude reviews after this date (YYYY-MM-DD)")
     args = parser.parse_args()
@@ -346,9 +365,9 @@ def main():
     if args.movie:
         slugs = [args.movie]
     else:
-        slugs = load_movie_config()
+        slugs = load_backfill_config()
         if not slugs:
-            log.error("No movies found in movies.json")
+            log.error("No movies found in %s", BACKFILL_CSV_PATH)
             sys.exit(1)
 
     print(f"\n  Movies:    {', '.join(slugs)}")
@@ -366,12 +385,15 @@ def main():
 
     totals = {"inserted": 0, "skipped": 0, "errors": 0}
 
-    for slug in slugs:
+    for i, slug in enumerate(slugs):
         log.info("=== Backfilling %s ===", slug)
         stats = backfill_movie(slug, conn, dry_run=args.dry_run, time_end_cutoff=time_end_cutoff)
         for k in totals:
             totals[k] += stats[k]
         log.info("  %s: %s", slug, stats)
+        if i < len(slugs) - 1:
+            log.info("Waiting 30s before next movie...")
+            time.sleep(30)
 
     # Post-run health check (skip on dry run or --time-end)
     if args.dry_run:
