@@ -194,6 +194,7 @@ Track known improvements or deferred work here. Remove items as they're complete
 1. Normalize subjective scores into a 0-1 scale
 2. Add mocked HTTP boundary tests for `_parse_cards()`
 3. Add Postgres integration tests (currently deferred -- all tests are pure logic)
+4. `bet-check` command: pre-bet data quality check comparing DB reviews against live RT site to catch meaningful edits (especially sentiment flips affecting tomatometer %)
 
 ## Security Decisions & Tradeoffs
 
