@@ -28,7 +28,7 @@ from rotten_tomatoes import (
 
 # Add scripts/ to path so we can import backfill module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from backfill import filter_reviews_by_cutoff, load_backfill_config, BACKFILL_CSV_PATH, main as backfill_main
+from backfill import filter_reviews_by_cutoff, load_backfill_config, _parse_time_end, BACKFILL_CSV_PATH, main as backfill_main
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -395,21 +395,29 @@ class TestFilterReviewsByCutoff:
 class TestLoadBackfillConfig:
     def test_loads_slugs_from_csv(self, tmp_path):
         csv_file = tmp_path / "backfill_movies.csv"
-        csv_file.write_text("slug\nproject_hail_mary\nthunderbolts\n")
+        csv_file.write_text("slug,time_end\nproject_hail_mary,2026-03-23\nthunderbolts,2025-05-05\n")
         with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
-            assert load_backfill_config() == ["project_hail_mary", "thunderbolts"]
+            result = load_backfill_config()
+            assert result == [
+                {"slug": "project_hail_mary", "time_end": "2026-03-23"},
+                {"slug": "thunderbolts", "time_end": "2025-05-05"},
+            ]
 
     def test_skips_blank_lines(self, tmp_path):
         csv_file = tmp_path / "backfill_movies.csv"
-        csv_file.write_text("slug\nproject_hail_mary\n\nthunderbolts\n")
+        csv_file.write_text("slug,time_end\nproject_hail_mary,2026-03-23\n\nthunderbolts,2025-05-05\n")
         with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
-            assert load_backfill_config() == ["project_hail_mary", "thunderbolts"]
+            result = load_backfill_config()
+            assert len(result) == 2
+            assert result[0]["slug"] == "project_hail_mary"
+            assert result[1]["slug"] == "thunderbolts"
 
     def test_strips_whitespace(self, tmp_path):
         csv_file = tmp_path / "backfill_movies.csv"
-        csv_file.write_text("slug\n  project_hail_mary  \n")
+        csv_file.write_text("slug,time_end\n  project_hail_mary  ,  2026-03-23  \n")
         with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
-            assert load_backfill_config() == ["project_hail_mary"]
+            result = load_backfill_config()
+            assert result == [{"slug": "project_hail_mary", "time_end": "2026-03-23"}]
 
     def test_missing_file_returns_empty(self, tmp_path):
         with patch("backfill.BACKFILL_CSV_PATH", str(tmp_path / "nope.csv")):
@@ -417,9 +425,55 @@ class TestLoadBackfillConfig:
 
     def test_empty_csv_returns_empty(self, tmp_path):
         csv_file = tmp_path / "backfill_movies.csv"
-        csv_file.write_text("slug\n")
+        csv_file.write_text("slug,time_end\n")
         with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
             assert load_backfill_config() == []
+
+    def test_slug_only_csv_no_time_end(self, tmp_path):
+        """CSV with only slug column (no time_end) still works -- backward compat."""
+        csv_file = tmp_path / "backfill_movies.csv"
+        csv_file.write_text("slug\nproject_hail_mary\nthunderbolts\n")
+        with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
+            result = load_backfill_config()
+            assert result == [
+                {"slug": "project_hail_mary", "time_end": None},
+                {"slug": "thunderbolts", "time_end": None},
+            ]
+
+    def test_blank_time_end_is_none(self, tmp_path):
+        """Rows with blank time_end get None (no cutoff)."""
+        csv_file = tmp_path / "backfill_movies.csv"
+        csv_file.write_text("slug,time_end\nproject_hail_mary,\nthunderbolts,2025-05-05\n")
+        with patch("backfill.BACKFILL_CSV_PATH", str(csv_file)):
+            result = load_backfill_config()
+            assert result[0] == {"slug": "project_hail_mary", "time_end": None}
+            assert result[1] == {"slug": "thunderbolts", "time_end": "2025-05-05"}
+
+
+class TestParseTimeEnd:
+    def test_returns_next_day_midnight_utc(self):
+        result = _parse_time_end("2026-03-23")
+        assert result == datetime(2026, 3, 24, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_includes_reviews_on_given_date(self):
+        """A review at 23:59:59 on the given date should be < cutoff."""
+        cutoff = _parse_time_end("2026-03-23")
+        review_ts = datetime(2026, 3, 23, 23, 59, 59, tzinfo=timezone.utc)
+        assert review_ts < cutoff
+
+    def test_excludes_reviews_after_given_date(self):
+        """A review at 00:00:00 the next day should be >= cutoff."""
+        cutoff = _parse_time_end("2026-03-23")
+        review_ts = datetime(2026, 3, 24, 0, 0, 0, tzinfo=timezone.utc)
+        assert review_ts >= cutoff
+
+    def test_invalid_format_raises(self):
+        with pytest.raises(ValueError):
+            _parse_time_end("not-a-date")
+
+    def test_wrong_format_raises(self):
+        with pytest.raises(ValueError):
+            _parse_time_end("03/23/2026")
 
 
 class TestBackfillArgparse:

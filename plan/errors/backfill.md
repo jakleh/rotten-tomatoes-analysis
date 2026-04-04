@@ -9,6 +9,8 @@
 | H-11 | Neither `--movie` nor `--all` provided | Low (user error) | Argparse error, script exits |
 | H-12 | Both `--movie` and `--all` provided | Low (user error) | Argparse error, script exits |
 | H-13 | `backfill_movies.csv` missing or empty | Low (user error) | Script exits with "No movies found" |
+| H-14 | Invalid `time_end` date in CSV row | Low (user error) | Movie skipped, error logged |
+| H-15 | CSV missing `time_end` column | Low (backward compat) | All movies get no cutoff (None) |
 | H-3 | None-timestamp reviews silently excluded | Medium | Incomplete backfill (missing reviews) |
 | H-4 | Off-by-one at cutoff boundary | Low (covered by tests) | Wrong reviews included/excluded |
 | H-5 | Selenium returns 0 reviews | Medium | No data for movie |
@@ -31,6 +33,16 @@
 - `--all` reads from `scripts/backfill_movies.csv`; if missing/empty, script exits with error
 - Cross-ref anti_blocking.md J-8, J-10
 
+**H-14 (invalid CSV date):**
+- Each row's `time_end` is parsed with `_parse_time_end()` (validates `YYYY-MM-DD` format)
+- Invalid dates log ERROR and skip that movie; other movies still proceed
+- Same validation as `--time-end` CLI flag (shared `_parse_time_end()` helper)
+
+**H-15 (missing time_end column):**
+- `load_backfill_config()` uses `row.get("time_end", "")` — missing column returns `None`
+- Movies without `time_end` run with no cutoff (full backfill), same as legacy behavior
+- Health check runs only for movies without a cutoff
+
 **H-3 (None-timestamp exclusion):**
 - Log excluded count and total count after filtering
 - WARN if >10% of reviews had `estimated_timestamp=None` (operator awareness of data quality)
@@ -43,7 +55,7 @@
 - Re-run is safe due to `ON CONFLICT DO NOTHING` idempotency
 
 **H-8 (health check):**
-- Skip health check when `--time-end` is active; log why it's skipped
+- Skip health check for any movie with a time cutoff (from `--time-end` or CSV `time_end`); log why it's skipped
 
 **H-9 (typo):**
 - Confirmation prompt shows slug before scraping begins; 0 reviews = likely typo
@@ -62,6 +74,7 @@
 | `error: argument --all: not allowed with argument --movie` | H-12 |
 | `No movies found in .../backfill_movies.csv` | H-13 |
 | `error: --time-end requires --movie` or `invalid date format` | H-1, H-2 |
+| `Invalid time_end '<value>' for <slug> -- skipping` | H-14 |
 | `Filtered N reviews: kept 0` | H-3 (all None timestamps) or H-4 (cutoff too early) |
 | `WARNING: >10% of reviews had None timestamps` | H-3 |
 | `Parsed 0 reviews` or `Found 0 review cards` | H-5, H-9 |
@@ -85,7 +98,9 @@ Backfill failure detected
 +-> Reviews scraped but 0 kept after filter?
 |   +-> Check filter log line: "Filtered N reviews: kept 0, excluded M"
 |   +-> All excluded by cutoff?
-|   |   +-> YES: Is --time-end date correct? Too early for this movie?
+|   |   +-> YES: Is cutoff date correct?
+|   |   |   +-> --movie mode: check --time-end value
+|   |   |   +-> --all mode: check time_end in backfill_movies.csv for this slug
 |   +-> All excluded by None timestamp?
 |   |   +-> YES: Timestamp parsing broken. Cross-ref html_parsing.md C-2/C-3
 |   +-> Mix of both?
@@ -108,7 +123,7 @@ DATABASE_URL="..." uv run python scripts/backfill.py --movie <slug> --dry-run
 # Single movie with time cutoff
 DATABASE_URL="..." uv run python scripts/backfill.py --movie <slug> --time-end 2026-02-21
 
-# Batch run from CSV
+# Batch run from CSV (per-movie cutoffs from time_end column)
 DATABASE_URL="..." uv run python scripts/backfill.py --all
 
 # Verify in DB: count reviews before cutoff date
@@ -116,6 +131,9 @@ psql $DATABASE_URL -c "SELECT COUNT(*) FROM reviews WHERE movie_slug = '<slug>' 
 
 # Check what was inserted
 psql $DATABASE_URL -c "SELECT reviewer_name, estimated_timestamp, site_timestamp_text FROM reviews WHERE movie_slug = '<slug>' ORDER BY estimated_timestamp DESC LIMIT 20"
+
+# Check CSV for a specific movie's cutoff
+grep '<slug>' scripts/backfill_movies.csv
 ```
 
 ## Research

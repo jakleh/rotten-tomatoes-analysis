@@ -9,7 +9,7 @@ Usage:
     # Single movie (required: --movie or --all)
     DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary
 
-    # All movies from scripts/backfill_movies.csv
+    # All movies from scripts/backfill_movies.csv (with per-movie time cutoffs)
     DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --all
 
     # Dry run (report only, no writes)
@@ -17,6 +17,15 @@ Usage:
 
     # Exclude reviews after a date (requires --movie)
     DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --time-end 2026-02-21
+
+CSV format (scripts/backfill_movies.csv):
+    slug,time_end
+    project_hail_mary,2026-03-23
+    thunderbolts,2025-05-05
+
+    time_end is optional per-row. When present, reviews after that date are
+    excluded (same semantics as --time-end). This allows each movie to have
+    its own Kalshi bet-end cutoff date.
 """
 
 import argparse
@@ -56,15 +65,38 @@ from rotten_tomatoes import (
 BACKFILL_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backfill_movies.csv")
 
 
-def load_backfill_config() -> list[str]:
-    """Read movie slugs from backfill_movies.csv."""
+def load_backfill_config() -> list[dict]:
+    """Read movie slugs and optional time_end dates from backfill_movies.csv.
+
+    Returns list of {"slug": str, "time_end": str | None}.
+    time_end is a YYYY-MM-DD string (the last day to include reviews for),
+    or None if not specified.
+    """
     if not os.path.exists(BACKFILL_CSV_PATH):
         log.error("Backfill CSV not found: %s", BACKFILL_CSV_PATH)
         return []
     with open(BACKFILL_CSV_PATH, newline="") as f:
         reader = csv.DictReader(f)
-        slugs = [row["slug"].strip() for row in reader if row.get("slug", "").strip()]
-    return slugs
+        movies = []
+        for row in reader:
+            slug = row.get("slug", "").strip()
+            if not slug:
+                continue
+            time_end = row.get("time_end", "").strip() or None
+            movies.append({"slug": slug, "time_end": time_end})
+    return movies
+
+
+def _parse_time_end(date_str: str) -> datetime:
+    """Convert YYYY-MM-DD string to next-day-midnight UTC cutoff.
+
+    The cutoff is exclusive: reviews with estimated_timestamp < cutoff are kept.
+    Adding 1 day means "include all reviews on the given date".
+    """
+    end_date = datetime.strptime(date_str, "%Y-%m-%d")
+    return datetime(
+        end_date.year, end_date.month, end_date.day, tzinfo=timezone.utc
+    ) + timedelta(days=1)
 
 log = logging.getLogger("backfill")
 
@@ -350,34 +382,37 @@ def main():
     )
 
     # Validate --time-end
-    time_end_cutoff = None
     if args.time_end:
         if not args.movie:
             parser.error("--time-end requires --movie")
         try:
-            end_date = datetime.strptime(args.time_end, "%Y-%m-%d")
+            _parse_time_end(args.time_end)
         except ValueError:
             parser.error(f"invalid date format '{args.time_end}', expected YYYY-MM-DD")
-        time_end_cutoff = datetime(
-            end_date.year, end_date.month, end_date.day, tzinfo=timezone.utc
-        ) + timedelta(days=1)
 
     if "DATABASE_URL" not in os.environ:
         log.error("DATABASE_URL environment variable is required.")
         sys.exit(1)
 
+    # Build movies list: each entry is {"slug": str, "time_end": str | None}
     if args.movie:
-        slugs = [args.movie]
+        movies = [{"slug": args.movie, "time_end": args.time_end}]
     else:
-        slugs = load_backfill_config()
-        if not slugs:
+        movies = load_backfill_config()
+        if not movies:
             log.error("No movies found in %s", BACKFILL_CSV_PATH)
             sys.exit(1)
 
+    slugs = [m["slug"] for m in movies]
+    has_per_movie_cutoffs = any(m["time_end"] for m in movies)
+
     print(f"\n  Movies:    {', '.join(slugs)}")
     print(f"  Dry run:   {args.dry_run}")
-    if time_end_cutoff:
-        print(f"  Time end:  {args.time_end} (exclude reviews after {time_end_cutoff.isoformat()})")
+    if args.time_end:
+        cutoff = _parse_time_end(args.time_end)
+        print(f"  Time end:  {args.time_end} (exclude reviews after {cutoff.isoformat()})")
+    elif has_per_movie_cutoffs:
+        print(f"  Time end:  per-movie (from CSV)")
     print()
 
     confirm = input("  Proceed? [y/N] ").strip().lower()
@@ -388,36 +423,61 @@ def main():
     conn = get_db_connection()
 
     totals = {"inserted": 0, "skipped": 0, "errors": 0}
+    movies_without_cutoff = []
 
-    for i, slug in enumerate(slugs):
+    for i, movie in enumerate(movies):
+        slug = movie["slug"]
+
+        # Compute per-movie cutoff
+        movie_cutoff = None
+        if movie["time_end"]:
+            try:
+                movie_cutoff = _parse_time_end(movie["time_end"])
+            except ValueError:
+                log.error(
+                    "Invalid time_end '%s' for %s -- skipping",
+                    movie["time_end"], slug,
+                )
+                totals["errors"] += 1
+                continue
+
+        if movie_cutoff is None:
+            movies_without_cutoff.append(slug)
+
         log.info("=== Backfilling %s ===", slug)
-        stats = backfill_movie(slug, conn, dry_run=args.dry_run, time_end_cutoff=time_end_cutoff)
+        if movie_cutoff:
+            log.info("  Time cutoff: %s", movie_cutoff.isoformat())
+
+        stats = backfill_movie(slug, conn, dry_run=args.dry_run, time_end_cutoff=movie_cutoff)
         for k in totals:
             totals[k] += stats[k]
         log.info("  %s: %s", slug, stats)
-        if i < len(slugs) - 1:
+        if i < len(movies) - 1:
             log.info("Waiting 30s before next movie...")
             time.sleep(30)
 
-    # Post-run health check (skip on dry run or --time-end)
-    if args.dry_run:
-        pass  # no health check on dry run
-    elif time_end_cutoff:
-        log.info("Skipping health check: --time-end filtering makes count comparison meaningless")
-    else:
-        log.info("=== Running health checks ===")
-        for slug in slugs:
-            health_check(slug, conn)
+    # Post-run health check (skip on dry run; only run for movies without cutoff)
+    if not args.dry_run:
+        if movies_without_cutoff:
+            log.info("=== Running health checks ===")
+            for slug in movies_without_cutoff:
+                health_check(slug, conn)
+        elif has_per_movie_cutoffs:
+            log.info(
+                "Skipping health check: per-movie time cutoffs make count comparison meaningless"
+            )
 
     conn.close()
 
     print(f"\n  Totals: {totals}")
     if args.dry_run:
         print("  (dry run -- no changes written)")
-    if time_end_cutoff:
+    movies_with_cutoff = [m for m in movies if m["time_end"]]
+    if movies_with_cutoff:
         print("\n  Verify in psql (should return 0):")
-        for slug in slugs:
-            print(f"    SELECT COUNT(*) FROM reviews WHERE movie_slug = '{slug}' AND estimated_timestamp >= '{time_end_cutoff.isoformat()}';")
+        for m in movies_with_cutoff:
+            mc = _parse_time_end(m["time_end"])
+            print(f"    SELECT COUNT(*) FROM reviews WHERE movie_slug = '{m['slug']}' AND estimated_timestamp >= '{mc.isoformat()}';")
 
 
 if __name__ == "__main__":

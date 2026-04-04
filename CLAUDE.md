@@ -13,9 +13,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 ├── .dockerignore               # Excludes tests, scripts, plan, docs from image
 ├── scripts/
 │   ├── backfill.py             # One-time backfill of historical reviews (run locally)
-│   └── backfill_movies.csv     # Backfill movie slugs (gitignored, local only)
+│   └── backfill_movies.csv     # Backfill config: slug + per-movie time_end (gitignored, local only)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 67 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 74 tests (all pure logic, no network/browser)
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # GitHub Actions: build image, push to AR, update Cloud Run Job
@@ -79,9 +79,9 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Logging** -- JSON structured logging via `_CloudRunFormatter`. Emits `{"severity", "message", "time"}` per line so Cloud Run auto-maps severity to Cloud Logging. Handles tracebacks via `record.exc_info`.
 - **Multi-movie config** -- `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides config.
 - **Run mode traceability** -- Logs `"=== Run started: mode=scheduled/manual, movies=[...] ==="` at start of every run.
-- **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10. Run locally with `DATABASE_URL` set. CLI: `--movie <slug>` (single movie) or `--all` (batch from `scripts/backfill_movies.csv`) — one is required, they're mutually exclusive. Also supports `--dry-run`, `--time-end YYYY-MM-DD` (exclude reviews after a date; requires `--movie`; skips health check). Anti-blocking: randomized click timing (`uniform(2, 5)`), 30s inter-movie delay in batch mode, page source logging on 0 cards found.
+- **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10 (only for movies without a time cutoff). Run locally with `DATABASE_URL` set. CLI: `--movie <slug>` (single movie) or `--all` (batch from `scripts/backfill_movies.csv`) — one is required, they're mutually exclusive. Also supports `--dry-run`, `--time-end YYYY-MM-DD` (exclude reviews after a date; requires `--movie`). Per-movie cutoffs: `backfill_movies.csv` supports a `time_end` column (YYYY-MM-DD, the Kalshi bet-end date); each movie is filtered to only include reviews up through that date. Anti-blocking: randomized click timing (`uniform(2, 5)`), 30s inter-movie delay in batch mode, page source logging on 0 cards found.
 - **CI/CD** -- `.github/workflows/deploy.yml` builds Docker image on push to main, pushes to Artifact Registry (tagged with commit SHA + `latest`), updates Cloud Run Job. Import sanity check (`python -c "import rotten_tomatoes"`) runs before push to catch broken images. Uses Workload Identity Federation (no stored keys).
-- **67 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), backfill CSV config loading (parsing, blank lines, whitespace, missing file, empty), and backfill argparse validation (`--movie`/`--all` mutual exclusion, neither flag, `--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
+- **74 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), backfill CSV config loading (parsing, slug+time_end columns, blank time_end, slug-only backward compat, blank lines, whitespace, missing file, empty), `_parse_time_end` (next-day-midnight semantics, boundary inclusion/exclusion, invalid formats), and backfill argparse validation (`--movie`/`--all` mutual exclusion, neither flag, `--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
 
 ## Database Schema
 
@@ -140,7 +140,7 @@ uv run --group dev pytest tests/ -v
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --dry-run
 
-# Backfill all movies from CSV (scripts/backfill_movies.csv)
+# Backfill all movies from CSV (with per-movie time cutoffs from time_end column)
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --all
 
 # Backfill with time cutoff (exclude reviews after a date, requires --movie)

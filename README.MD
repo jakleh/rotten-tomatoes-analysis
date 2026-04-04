@@ -76,7 +76,7 @@ DATABASE_URL="postgresql://..." uv run python rotten_tomatoes.py --movie project
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie project_hail_mary --dry-run
 
-# Backfill all movies from scripts/backfill_movies.csv
+# Backfill all movies from scripts/backfill_movies.csv (with per-movie time cutoffs)
 DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --all
 
 # Backfill with time cutoff (exclude reviews after a date, requires --movie)
@@ -89,7 +89,7 @@ DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie projec
 uv run --group dev pytest tests/ -v
 ```
 
-All 67 tests use mocks -- no network, browser, or database required.
+All 74 tests use mocks -- no network, browser, or database required.
 
 ## Deployment
 
@@ -135,10 +135,10 @@ docker run --rm -e DATABASE_URL="postgresql://..." rt-scraper:local
 ├── Dockerfile                   # Python 3.14 + Chromium + ChromeDriver
 ├── .dockerignore                # Excludes non-runtime files from image
 ├── tests/
-│   └── test_rotten_tomatoes.py  # 67 tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # 74 tests (pure logic, no network/browser)
 ├── scripts/
 │   ├── backfill.py              # One-time historical review backfill
-│   └── backfill_movies.csv      # Backfill movie slugs (gitignored, local only)
+│   └── backfill_movies.csv      # Backfill config: slug + per-movie time_end (gitignored, local only)
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml           # CI/CD: build + push image + update Cloud Run Job
