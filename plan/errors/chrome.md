@@ -14,6 +14,7 @@
 | A-8 | Chrome hung, consuming memory until container killed | Low | Timeout then retry |
 | A-9 | `CHROME_BIN` env var not set or wrong path | Low | Fatal |
 | A-10 | Zombie chromedriver processes accumulating across movies | Low | OOM on later movies |
+| A-11 | Retry loop reuses dead Chrome session | Low (observed in backfill) | All retries fail with `invalid session id` |
 
 ---
 
@@ -42,6 +43,13 @@
 - `finally: driver.quit()` in `get_reviews()` ensures cleanup
 - Add `driver.set_page_load_timeout(30)` and `driver.set_script_timeout(15)`
 
+**A-11 (dead session retry — deferred):**
+- Observed in backfill (2026-04-05): `a_quiet_place_day_one` top-critics, Chrome session died on page load
+- Retry loop calls `driver.get()` on a dead session — retries 2 and 3 are guaranteed `InvalidSessionIdException`
+- Impact is low: `get_all_reviews()` creates a fresh driver per call, so the next critic-filter pass recovers
+- Future fix: catch `InvalidSessionIdException` in retry loop, call `driver.quit()`, create new driver via `_build_driver()`
+- Cross-ref backfill.md H-19
+
 **A-9 (CHROME_BIN):**
 - Dockerfile sets `ENV CHROME_BIN=/usr/bin/chromium`
 - Cloud Run Job also sets `--set-env-vars=CHROME_BIN=/usr/bin/chromium`
@@ -69,6 +77,7 @@
 | `session not created: This version of ChromeDriver only supports Chrome version XXX` | A-3, A-4 |
 | Container exit code 137 (OOM) | A-2, A-7, A-10 |
 | Job exceeds timeout | A-8 |
+| `invalid session id` on all 3 retries | A-11 (dead session reused in retry loop) |
 
 ---
 
@@ -98,9 +107,15 @@ Chrome failure detected
 |   +-> NO: Continue
 |
 +-> Job timed out?
-    +-> YES: Chrome is hung.
-    |        Check: did "Load More" loop iterate excessively?
-    |        Fix: add page_load_timeout and script_timeout to driver
+|   +-> YES: Chrome is hung.
+|   |        Check: did "Load More" loop iterate excessively?
+|   |        Fix: add page_load_timeout and script_timeout to driver
+|   +-> NO: Continue
+|
++-> "invalid session id" on all 3 retries?
+    +-> YES: A-11. Session died and retry loop reused dead driver.
+    |        Next critic-filter pass should recover (fresh driver).
+    |        Re-run for that movie if top_critic flags needed.
     +-> NO: Check container logs for Python traceback
 ```
 

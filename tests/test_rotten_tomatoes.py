@@ -91,6 +91,9 @@ class TestGetTimestampUnit:
         assert get_timestamp_unit("3D") == "d"
         assert get_timestamp_unit("5Min") == "m"
 
+    def test_slash_date_returns_date(self):
+        assert get_timestamp_unit("01/19/2025") == "date"
+
 
 # -- convert_rel_timestamp_to_abs ----------------------------------------------
 
@@ -171,6 +174,25 @@ class TestConvertRelTimestampToAbs:
         earlier = datetime(2026, 1, 1, 6, 0, 0, tzinfo=timezone.utc)
         result = convert_rel_timestamp_to_abs("2h", earlier)
         assert result == datetime(2026, 1, 1, 4, 0, 0, tzinfo=timezone.utc)
+
+    # Slash date format (MM/DD/YYYY) — used by RT for older reviews
+    def test_slash_date_basic(self):
+        result = convert_rel_timestamp_to_abs("01/19/2025", FIXED_NOW)
+        assert result is not None
+        assert result == datetime(2025, 1, 19, tzinfo=timezone.utc)
+
+    def test_slash_date_dec_31(self):
+        result = convert_rel_timestamp_to_abs("12/31/2024", FIXED_NOW)
+        assert result is not None
+        assert result == datetime(2024, 12, 31, tzinfo=timezone.utc)
+
+    def test_slash_date_feb_29_leap_year(self):
+        result = convert_rel_timestamp_to_abs("02/29/2024", FIXED_NOW)
+        assert result is not None
+        assert result == datetime(2024, 2, 29, tzinfo=timezone.utc)
+
+    def test_slash_date_invalid_returns_none(self):
+        assert convert_rel_timestamp_to_abs("13/40/2025", FIXED_NOW) is None
 
 
 # -- compute_review_id --------------------------------------------------------

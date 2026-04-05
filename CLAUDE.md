@@ -15,13 +15,14 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 │   ├── backfill.py             # One-time backfill of historical reviews (run locally)
 │   └── backfill_movies.csv     # Backfill config: slug + per-movie time_end (gitignored, local only)
 ├── tests/
-│   └── test_rotten_tomatoes.py # 82 tests (all pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py # 87 tests (all pure logic, no network/browser)
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # GitHub Actions: build image, push to AR, update Cloud Run Job
 ├── plan/
 │   ├── new_feature_protocol.md # Plan -> Simulate Errors -> Implement -> Validate workflow
 │   ├── backfill_anti_blocking.md # Plan doc for anti-blocking mitigations
+│   ├── backfill_date_parsing.md # Plan doc for MM/DD/YYYY timestamp parsing fix
 │   └── errors/                 # Error playbooks with decision trees
 │       ├── anti_blocking.md    # Anti-blocking & rate limiting failures
 │       ├── chrome.md           # Chrome/ChromeDriver failures
@@ -75,13 +76,13 @@ Rotten Tomatoes web scraper that builds a time-series database of movie reviews.
 - **Postgres layer** -- `get_db_connection()` uses `DATABASE_URL` env var with `connect_timeout=10`. `insert_review()` uses `ON CONFLICT DO NOTHING` for idempotent dedup.
 - **Spike guard** -- If a single batch inserts more than `INSERT_SPIKE_THRESHOLD` (50) reviews AND the movie already has 50+ existing reviews, rollback instead of committing (likely selector breakage creating new hashes for every existing review). Skipped for fresh DB / newly added movies.
 - **Deduplication** -- MD5 hash of `(movie_slug + reviewer_name + publication_name + subjective_score)` as `unique_review_id`, enforced via Postgres UNIQUE constraint.
-- **Timestamp utilities** -- Robust regex `r'^(\d+)\s*(m|min|h|hr|d|day)s?$'` with `UNIT_ALIASES` mapping. `convert_rel_timestamp_to_abs()` takes `scrape_time` param for consistency within a scrape run. Year heuristic rolls back when parsed date is in the future.
+- **Timestamp utilities** -- Robust regex `r'^(\d+)\s*(m|min|h|hr|d|day)s?$'` with `UNIT_ALIASES` mapping. `convert_rel_timestamp_to_abs()` takes `scrape_time` param for consistency within a scrape run. Parses three formats: relative (`5m`, `2h`, `3d`), abbreviated date (`Mar 20`, year inferred with rollback heuristic), and slash date (`01/19/2025`, MM/DD/YYYY with explicit year). Returns `None` with WARNING for unrecognized formats.
 - **Logging** -- JSON structured logging via `_CloudRunFormatter`. Emits `{"severity", "message", "time"}` per line so Cloud Run auto-maps severity to Cloud Logging. Handles tracebacks via `record.exc_info`.
 - **Multi-movie config** -- `movies.json` with `[{slug, enabled}]` entries. `load_movie_config()` reads enabled slugs. CLI `--movie <slug>` overrides config.
 - **Run mode traceability** -- Logs `"=== Run started: mode=scheduled/manual, movies=[...] ==="` at start of every run.
 - **Backfill script** -- `scripts/backfill.py` one-time tool to scrape ALL historical reviews (including date-format timestamps). Two-pass (top-critics, all-critics). Uses incremental JS extraction: after each "Load More" click, only newly added cards are serialized via `outerHTML` and parsed (avoids full-page DOM serialization that times out on heavy pages). Post-run health check: HTTP GET to RT main page, compares count to DB, ERROR if delta > 10 (only for movies without a time cutoff). Run locally with `DATABASE_URL` set. CLI: `--movie <slug>` (single movie) or `--all` (batch from `scripts/backfill_movies.csv`) — one is required, they're mutually exclusive. Also supports `--dry-run`, `--time-end YYYY-MM-DD` (exclude reviews after a date; requires `--movie`). Per-movie cutoffs: `backfill_movies.csv` supports a `time_end` column (YYYY-MM-DD, the Kalshi bet-end date); each movie is filtered to only include reviews up through that date. Anti-blocking: randomized click timing (`uniform(2, 5)`), 30s inter-movie delay in batch mode, page source logging on 0 cards found.
 - **CI/CD** -- `.github/workflows/deploy.yml` builds Docker image on push to main, pushes to Artifact Registry (tagged with commit SHA + `latest`), updates Cloud Run Job. Import sanity check (`python -c "import rotten_tomatoes"`) runs before push to catch broken images. Uses Workload Identity Federation (no stored keys).
-- **82 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), backfill CSV config loading (parsing, slug+time_end columns, blank time_end, slug-only backward compat, blank lines, whitespace, missing file, empty), `_parse_time_end` (next-day-midnight semantics, boundary inclusion/exclusion, invalid formats), `_parse_card_html` (field extraction, top-critic flag, confidence levels, missing fields, hash determinism), `_extract_new_cards` (multi-card HTML parsing, empty input), and backfill argparse validation (`--movie`/`--all` mutual exclusion, neither flag, `--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
+- **87 tests** -- Covering timestamp utils (incl. robust regex variants, year heuristic, MM/DD/YYYY slash dates, leap year, invalid slash dates), MD5 hashing (incl. cross-movie uniqueness), `_find_selector` against sample HTML, movie config loading, JSON log formatter (valid output, severity mapping, traceback inclusion, non-ASCII), backfill `filter_reviews_by_cutoff` (boundary conditions, None handling, mixed input), backfill CSV config loading (parsing, slug+time_end columns, blank time_end, slug-only backward compat, blank lines, whitespace, missing file, empty), `_parse_time_end` (next-day-midnight semantics, boundary inclusion/exclusion, invalid formats), `_parse_card_html` (field extraction, top-critic flag, confidence levels, missing fields, hash determinism), `_extract_new_cards` (multi-card HTML parsing, empty input), and backfill argparse validation (`--movie`/`--all` mutual exclusion, neither flag, `--time-end` requires `--movie`, invalid date format). All use mocks, no network/browser.
 
 ## Database Schema
 

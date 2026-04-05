@@ -12,6 +12,9 @@
 | H-14 | Invalid `time_end` date in CSV row | Low (user error) | Movie skipped, error logged |
 | H-15 | CSV missing `time_end` column | Low (backward compat) | All movies get no cutoff (None) |
 | H-3 | None-timestamp reviews silently excluded | Medium | Incomplete backfill (missing reviews) |
+| H-17 | RT uses MM/DD/YYYY format for older reviews | High (confirmed) | 96-98% of reviews dropped if not parsed |
+| H-18 | Neon SSL connection dropped during long batch run | Medium | Script crashes, remaining movies not processed |
+| H-19 | Chrome retry loop reuses dead session | Low | One critic-filter pass returns 0 reviews (other pass recovers) |
 | H-4 | Off-by-one at cutoff boundary | Low (covered by tests) | Wrong reviews included/excluded |
 | H-5 | Selenium returns 0 reviews | Medium | No data for movie |
 | H-16 | JS extraction fails for a click batch | Low (incremental extraction) | Batch skipped; reviews from prior clicks preserved. |
@@ -47,6 +50,29 @@
 **H-3 (None-timestamp exclusion):**
 - Log excluded count and total count after filtering
 - WARN if >10% of reviews had `estimated_timestamp=None` (operator awareness of data quality)
+- Root cause identified in overnight run (2026-04-05): RT uses `MM/DD/YYYY` for older reviews. See H-17.
+
+**H-17 (MM/DD/YYYY timestamps):**
+- **Fixed**: `convert_rel_timestamp_to_abs()` now parses `MM/DD/YYYY` as a third format (after relative and `"Mar 20"`)
+- Parsing order: relative (`5m`) → abbreviated date (`Mar 20`) → slash date (`01/19/2025`) → None
+- No year heuristic needed — full year is in the string
+- Main scraper unaffected: `_parse_cards()` stops at `get_timestamp_unit() == "date"` before reaching these
+- See plan doc: `plan/backfill_date_parsing.md`
+
+**H-18 (Neon SSL drop during batch — deferred):**
+- Observed: `psycopg2.OperationalError: SSL connection has been closed unexpectedly` on movie #8 of 141
+- Current behavior: script crashes, remaining movies not processed. Completed movies are safe (committed).
+- Workaround: trim CSV to remaining movies and re-run (idempotent inserts handle overlap)
+- Future fix: wrap `insert_review()` calls with connection retry logic (catch `OperationalError`, reconnect, retry)
+- Cross-ref neon.md D-8
+
+**H-19 (Chrome retry reuses dead session — deferred):**
+- Observed: `a_quiet_place_day_one` top-critics failed all 3 retries with `invalid session id`
+- Root cause: retry loop calls `driver.get()` on a driver whose session is already dead. Retries 2 and 3 are guaranteed to fail.
+- All-critics pass recovered because `get_all_reviews()` creates a fresh driver per call.
+- Impact is low: only one critic-filter pass is lost, and all-critics is a superset (minus `top_critic=True` flag)
+- Future fix: catch `InvalidSessionIdException` and create a new driver inside the retry loop
+- Cross-ref chrome.md A-8
 
 **H-4 (off-by-one):**
 - Strict `<` against next-day midnight; 4 boundary tests cover exact semantics
@@ -91,6 +117,9 @@
 | `Selenium error for ... Returning N reviews captured so far` | H-16 (Chrome crash; partial reviews returned) |
 | `Parsed 0 reviews` or `Found 0 total reviews` or `0 reviews found` | H-5, H-9 |
 | Health check delta > 10 when `--time-end` NOT active | H-6 |
+| `Could not parse timestamp: 'MM/DD/YYYY'` | H-17 (if still appearing, parsing not updated) |
+| `SSL connection has been closed unexpectedly` | H-18 (Neon dropped mid-batch) |
+| `invalid session id` across all 3 retries | H-19 (dead Chrome session reused) |
 | `OperationalError` or `Connection refused` | H-7 |
 
 ## Diagnosis Decision Tree
@@ -114,9 +143,21 @@ Backfill failure detected
 |   |   |   +-> --movie mode: check --time-end value
 |   |   |   +-> --all mode: check time_end in backfill_movies.csv for this slug
 |   +-> All excluded by None timestamp?
-|   |   +-> YES: Timestamp parsing broken. Cross-ref html_parsing.md C-2/C-3
+|   |   +-> YES: New date format? Check warnings for pattern.
+|   |   |   +-> "Could not parse timestamp: 'MM/DD/YYYY'"? H-17 — parsing not updated.
+|   |   |   +-> Other format? Add new branch to convert_rel_timestamp_to_abs().
 |   +-> Mix of both?
 |       +-> Check None count. If >10%, parsing may be partially broken.
+|
++-> Script crashed with "SSL connection has been closed unexpectedly"?
+|   +-> H-18. Neon dropped the connection during a long batch run.
+|   +-> Completed movies are safe. Trim CSV to remaining movies, re-run.
+|   +-> Cross-ref neon.md D-8.
+|
++-> All 3 retries failed with "invalid session id"?
+|   +-> H-19. Chrome session died and retry loop reused the dead driver.
+|   +-> Other critic-filter pass likely succeeded (fresh driver).
+|   +-> Re-run for that movie to fill in missing top_critic flags.
 |
 +-> Chrome crashed mid-scrape ("Selenium error ... Returning N reviews")?
 |   +-> Partial reviews were saved. Re-run to attempt remaining.

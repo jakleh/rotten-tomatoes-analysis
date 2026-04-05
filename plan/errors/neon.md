@@ -12,6 +12,7 @@
 | D-6 | DATABASE_URL missing from Cloud Run env | Low | KeyError crash |
 | D-7 | SSL handshake failure (`sslmode=require` needed) | Low | Connection refused |
 | D-8 | Connection dropped mid-transaction (Neon scales to zero) | Very Low | OperationalError |
+| D-11 | SSL connection dropped during long backfill batch | Medium (observed) | Script crashes, remaining movies lost |
 | D-9 | Too many concurrent connections | Low | Connection refused |
 | D-10 | Neon password rotation or endpoint change | Low | Auth failure |
 
@@ -94,6 +95,7 @@
 | `FATAL: password authentication failed` | D-5, D-10 |
 | `KeyError: 'DATABASE_URL'` | D-6 |
 | `server closed the connection unexpectedly` | D-8 |
+| `SSL connection has been closed unexpectedly` | D-8, D-11 |
 | `remaining connection slots are reserved` | D-9 |
 
 ---
@@ -126,10 +128,12 @@ Database connection error
 |   |        Check IAM: secretAccessor role on compute SA
 |   +-> NO: Continue
 |
-+-> "server closed the connection unexpectedly"?
++-> "server closed the connection unexpectedly" or "SSL connection has been closed unexpectedly"?
     +-> YES: Connection dropped mid-transaction.
-    |        With "connect late" pattern, this is rare (connection open ~30 sec).
-    |        Retry should handle it.
+    |        Main scraper: "connect late" pattern keeps window small (~30 sec). Retry handles it.
+    |        Backfill: connection may be open for minutes across many inserts.
+    |        +-> Backfill crash? Trim CSV to remaining movies, re-run. Cross-ref backfill.md H-18.
+    |        +-> Future: add reconnect logic to backfill insert loop.
     +-> NO: Examine full traceback and psycopg2 error code.
 ```
 

@@ -125,10 +125,11 @@ def convert_rel_timestamp_to_abs(rel_timestamp: str, scrape_time: datetime) -> d
     have a consistent reference.
 
     Formats:
-      "5m"     -> 5 minutes before scrape_time
-      "2h"     -> 2 hours before scrape_time
-      "3d"     -> 3 days before scrape_time
-      "Mar 20" -> March 20, inferred year
+      "5m"         -> 5 minutes before scrape_time
+      "2h"         -> 2 hours before scrape_time
+      "3d"         -> 3 days before scrape_time
+      "Mar 20"     -> March 20, inferred year
+      "01/19/2025" -> January 19, 2025 (MM/DD/YYYY)
     """
     rel_timestamp = rel_timestamp.strip()
     if not rel_timestamp:
@@ -153,6 +154,15 @@ def convert_rel_timestamp_to_abs(rel_timestamp: str, scrape_time: datetime) -> d
         ).replace(tzinfo=timezone.utc)
         if parsed > scrape_time:
             parsed = parsed.replace(year=current_year - 1)
+        return parsed
+    except ValueError:
+        pass
+
+    # Slash date format ("01/19/2025")
+    try:
+        parsed = datetime.strptime(rel_timestamp, "%m/%d/%Y").replace(
+            tzinfo=timezone.utc
+        )
         return parsed
     except ValueError:
         log.warning("Could not parse timestamp: %r", rel_timestamp)
