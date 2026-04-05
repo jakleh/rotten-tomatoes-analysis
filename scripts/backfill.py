@@ -338,8 +338,11 @@ def filter_reviews_by_cutoff(reviews: list[dict], time_end_cutoff: datetime) -> 
     ]
 
 
-def backfill_movie(movie_slug: str, conn, dry_run: bool = False, time_end_cutoff: datetime | None = None) -> dict:
+def backfill_movie(movie_slug: str, dry_run: bool = False, time_end_cutoff: datetime | None = None) -> dict:
     """Backfill all reviews for a single movie.
+
+    Uses "connect late" pattern: scrapes into memory first, connects to DB
+    only for batch insert, then closes.
 
     Returns a stats dict: {inserted, skipped, errors}.
     """
@@ -381,26 +384,46 @@ def backfill_movie(movie_slug: str, conn, dry_run: bool = False, time_end_cutoff
                 none_count, total_before, 100 * none_count / total_before,
             )
 
-    # Phase 2: Insert into DB
+    # Phase 2: Insert into DB ("connect late" -- open only for inserts)
     seen_ids = set()
-    for review in all_reviews:
-        rid = review["unique_review_id"]
-        if rid in seen_ids:
-            stats["skipped"] += 1
-            continue
-        seen_ids.add(rid)
-
-        if dry_run:
+    if dry_run:
+        for review in all_reviews:
+            rid = review["unique_review_id"]
+            if rid in seen_ids:
+                stats["skipped"] += 1
+                continue
+            seen_ids.add(rid)
             stats["inserted"] += 1
-            continue
+        return stats
 
-        if insert_review(conn, movie_slug, review):
-            stats["inserted"] += 1
-        else:
-            stats["skipped"] += 1
+    try:
+        conn = get_db_connection()
+    except Exception:
+        log.exception("DB connection failed for %s -- skipping inserts", movie_slug)
+        stats["errors"] += 1
+        return stats
 
-    if not dry_run:
+    try:
+        for review in all_reviews:
+            rid = review["unique_review_id"]
+            if rid in seen_ids:
+                stats["skipped"] += 1
+                continue
+            seen_ids.add(rid)
+
+            if insert_review(conn, movie_slug, review):
+                stats["inserted"] += 1
+            else:
+                stats["skipped"] += 1
+
         conn.commit()
+    except Exception:
+        log.exception(
+            "DB error during inserts for %s -- rolling back", movie_slug
+        )
+        stats["errors"] += 1
+    finally:
+        conn.close()
 
     return stats
 
@@ -497,8 +520,6 @@ def main():
         print("Aborted.")
         sys.exit(0)
 
-    conn = get_db_connection()
-
     totals = {"inserted": 0, "skipped": 0, "errors": 0}
     movies_without_cutoff = []
 
@@ -525,7 +546,7 @@ def main():
         if movie_cutoff:
             log.info("  Time cutoff: %s", movie_cutoff.isoformat())
 
-        stats = backfill_movie(slug, conn, dry_run=args.dry_run, time_end_cutoff=movie_cutoff)
+        stats = backfill_movie(slug, dry_run=args.dry_run, time_end_cutoff=movie_cutoff)
         for k in totals:
             totals[k] += stats[k]
         log.info("  %s: %s", slug, stats)
@@ -537,14 +558,19 @@ def main():
     if not args.dry_run:
         if movies_without_cutoff:
             log.info("=== Running health checks ===")
-            for slug in movies_without_cutoff:
-                health_check(slug, conn)
+            try:
+                conn = get_db_connection()
+                try:
+                    for slug in movies_without_cutoff:
+                        health_check(slug, conn)
+                finally:
+                    conn.close()
+            except Exception:
+                log.exception("DB connection failed for health checks -- skipping")
         elif has_per_movie_cutoffs:
             log.info(
                 "Skipping health check: per-movie time cutoffs make count comparison meaningless"
             )
-
-    conn.close()
 
     print(f"\n  Totals: {totals}")
     if args.dry_run:

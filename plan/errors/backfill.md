@@ -19,7 +19,7 @@
 | H-5 | Selenium returns 0 reviews | Medium | No data for movie |
 | H-16 | JS extraction fails for a click batch | Low (incremental extraction) | Batch skipped; reviews from prior clicks preserved. |
 | H-6 | Duplicate reviews (hash collision) | Very Low | Old score kept, silent |
-| H-7 | DB connection fails mid-backfill | Low | OperationalError, partial data |
+| H-7 | DB connection or insert fails for a movie | Low | Movie's reviews lost, other movies proceed |
 | H-8 | Health check misleading after filtering | High (when --time-end used) | False alarm on count delta |
 | H-9 | Wrong movie slug (typo) | Low (user error) | 0 reviews scraped |
 | H-10 | Confirmation prompt bypassed (piped stdin) | Very Low | Unintended execution |
@@ -59,12 +59,12 @@
 - Main scraper unaffected: `_parse_cards()` stops at `get_timestamp_unit() == "date"` before reaching these
 - See plan doc: `plan/backfill_date_parsing.md`
 
-**H-18 (Neon SSL drop during batch — deferred):**
+**H-18 (Neon SSL drop during batch — fixed):**
 - Observed: `psycopg2.OperationalError: SSL connection has been closed unexpectedly` on movie #8 of 141
-- Current behavior: script crashes, remaining movies not processed. Completed movies are safe (committed).
-- Workaround: trim CSV to remaining movies and re-run (idempotent inserts handle overlap)
-- Future fix: wrap `insert_review()` calls with connection retry logic (catch `OperationalError`, reconnect, retry)
-- Cross-ref neon.md D-8
+- Root cause: single DB connection held open for entire multi-hour run, idle during scrape phases
+- **Fixed**: `backfill_movie()` now uses "connect late" pattern — opens a fresh connection for inserts only, closes immediately after commit. Connection lifetime is ~10-30 seconds per movie instead of hours.
+- Health check also opens its own connection separately.
+- Cross-ref neon.md D-8, D-11
 
 **H-19 (Chrome retry reuses dead session — deferred):**
 - Observed: `a_quiet_place_day_one` top-critics failed all 3 retries with `invalid session id`
@@ -77,9 +77,17 @@
 **H-4 (off-by-one):**
 - Strict `<` against next-day midnight; 4 boundary tests cover exact semantics
 
-**H-5 / H-6 / H-7 (scraping & DB):**
-- Cross-ref selenium.md (H-5), html_parsing.md (H-6), neon.md (H-7)
+**H-5 / H-6 (scraping):**
+- Cross-ref selenium.md (H-5), html_parsing.md (H-6)
 - Re-run is safe due to `ON CONFLICT DO NOTHING` idempotency
+
+**H-7 (DB connection or insert failure):**
+- `backfill_movie()` catches all DB exceptions (connection failure, insert error, commit failure)
+- On `get_db_connection()` failure: logs error, `errors += 1`, returns stats. Loop continues to next movie.
+- On insert/commit failure: logs error with traceback, Postgres auto-rolls back uncommitted inserts, `errors += 1`, connection closed in `finally`. Loop continues to next movie.
+- `errors` counts movie-level DB failures (0 or 1 per movie). `inserted + skipped < expected` signals how far it got before the failure.
+- Failed movies appear in totals with `errors > 0`. Re-run those movies to retry.
+- Cross-ref neon.md D-1, D-8, D-11
 
 **H-16 (JS extraction failure):**
 - Backfill uses incremental JS extraction: after each click, only new cards are serialized via `outerHTML` (not full page DOM)
@@ -118,9 +126,11 @@
 | `Parsed 0 reviews` or `Found 0 total reviews` or `0 reviews found` | H-5, H-9 |
 | Health check delta > 10 when `--time-end` NOT active | H-6 |
 | `Could not parse timestamp: 'MM/DD/YYYY'` | H-17 (if still appearing, parsing not updated) |
-| `SSL connection has been closed unexpectedly` | H-18 (Neon dropped mid-batch) |
+| `SSL connection has been closed unexpectedly` | H-18 (should not recur with connect-late) |
 | `invalid session id` across all 3 retries | H-19 (dead Chrome session reused) |
-| `OperationalError` or `Connection refused` | H-7 |
+| `DB connection failed for <slug> -- skipping inserts` | H-7 (connection failure, movie skipped) |
+| `DB error during inserts for <slug> -- rolling back` | H-7 (insert/commit failure, movie skipped) |
+| `OperationalError` or `Connection refused` | H-7 (within above messages) |
 
 ## Diagnosis Decision Tree
 
@@ -149,10 +159,10 @@ Backfill failure detected
 |   +-> Mix of both?
 |       +-> Check None count. If >10%, parsing may be partially broken.
 |
-+-> Script crashed with "SSL connection has been closed unexpectedly"?
-|   +-> H-18. Neon dropped the connection during a long batch run.
-|   +-> Completed movies are safe. Trim CSV to remaining movies, re-run.
-|   +-> Cross-ref neon.md D-8.
++-> "DB connection failed" or "DB error during inserts" for a movie?
+|   +-> H-7. That movie's reviews were not inserted. Other movies proceeded.
+|   +-> Check totals at end of run: `errors > 0` confirms which movies failed.
+|   +-> Re-run failed movies individually. Cross-ref neon.md D-1, D-8.
 |
 +-> All 3 retries failed with "invalid session id"?
 |   +-> H-19. Chrome session died and retry loop reused the dead driver.
