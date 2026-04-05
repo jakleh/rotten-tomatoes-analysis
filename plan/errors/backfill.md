@@ -14,6 +14,7 @@
 | H-3 | None-timestamp reviews silently excluded | Medium | Incomplete backfill (missing reviews) |
 | H-4 | Off-by-one at cutoff boundary | Low (covered by tests) | Wrong reviews included/excluded |
 | H-5 | Selenium returns 0 reviews | Medium | No data for movie |
+| H-16 | JS extraction fails for a click batch | Low (incremental extraction) | Batch skipped; reviews from prior clicks preserved. |
 | H-6 | Duplicate reviews (hash collision) | Very Low | Old score kept, silent |
 | H-7 | DB connection fails mid-backfill | Low | OperationalError, partial data |
 | H-8 | Health check misleading after filtering | High (when --time-end used) | False alarm on count delta |
@@ -54,6 +55,15 @@
 - Cross-ref selenium.md (H-5), html_parsing.md (H-6), neon.md (H-7)
 - Re-run is safe due to `ON CONFLICT DO NOTHING` idempotency
 
+**H-16 (JS extraction failure):**
+- Backfill uses incremental JS extraction: after each click, only new cards are serialized via `outerHTML` (not full page DOM)
+- Stall check uses `querySelectorAll('review-card').length` (JS, no serialization)
+- If a batch extraction fails, that batch is skipped but all previously captured reviews are preserved
+- Final sweep catches any cards missed by the last failed batch
+- Page load timeout is 120s (vs 30s for main scraper) for initial page load
+- V8 heap is 1024MB (vs 256MB for main scraper) to handle large DOMs without Chrome freezing
+- Cross-ref selenium.md, chrome.md
+
 **H-8 (health check):**
 - Skip health check for any movie with a time cutoff (from `--time-end` or CSV `time_end`); log why it's skipped
 
@@ -77,7 +87,9 @@
 | `Invalid time_end '<value>' for <slug> -- skipping` | H-14 |
 | `Filtered N reviews: kept 0` | H-3 (all None timestamps) or H-4 (cutoff too early) |
 | `WARNING: >10% of reviews had None timestamps` | H-3 |
-| `Parsed 0 reviews` or `Found 0 review cards` | H-5, H-9 |
+| `Card count JS failed after click N` or `Card extraction failed after click N` | H-16 (non-fatal, prior reviews preserved) |
+| `Selenium error for ... Returning N reviews captured so far` | H-16 (Chrome crash; partial reviews returned) |
+| `Parsed 0 reviews` or `Found 0 total reviews` or `0 reviews found` | H-5, H-9 |
 | Health check delta > 10 when `--time-end` NOT active | H-6 |
 | `OperationalError` or `Connection refused` | H-7 |
 
@@ -105,6 +117,11 @@ Backfill failure detected
 |   |   +-> YES: Timestamp parsing broken. Cross-ref html_parsing.md C-2/C-3
 |   +-> Mix of both?
 |       +-> Check None count. If >10%, parsing may be partially broken.
+|
++-> Chrome crashed mid-scrape ("Selenium error ... Returning N reviews")?
+|   +-> Partial reviews were saved. Re-run to attempt remaining.
+|   +-> If same crash point repeats: DOM too large for 1024MB heap.
+|       +-> Increase js_heap_mb in backfill or accept partial data.
 |
 +-> Reviews inserted but count seems wrong?
     +-> Unexpectedly high inserts?

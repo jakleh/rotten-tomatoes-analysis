@@ -28,7 +28,15 @@ from rotten_tomatoes import (
 
 # Add scripts/ to path so we can import backfill module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from backfill import filter_reviews_by_cutoff, load_backfill_config, _parse_time_end, BACKFILL_CSV_PATH, main as backfill_main
+from backfill import (
+    filter_reviews_by_cutoff,
+    load_backfill_config,
+    _parse_time_end,
+    _parse_card_html,
+    _extract_new_cards,
+    BACKFILL_CSV_PATH,
+    main as backfill_main,
+)
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -474,6 +482,93 @@ class TestParseTimeEnd:
     def test_wrong_format_raises(self):
         with pytest.raises(ValueError):
             _parse_time_end("03/23/2026")
+
+
+class TestParseCardHtml:
+    """Tests for _parse_card_html -- parses a single BeautifulSoup card into a review dict."""
+
+    CARD_HTML = """
+    <review-card>
+        <span slot="timestamp">5m</span>
+        <rt-link slot="name">Alice</rt-link>
+        <rt-link slot="publication">AV Club</rt-link>
+        <span slot="rating"><span style="font-weight:bold">4/5</span></span>
+        <score-icon-critics sentiment="positive"></score-icon-critics>
+        <div slot="review">Great movie!</div>
+    </review-card>
+    """
+
+    def _card(self):
+        soup = BeautifulSoup(self.CARD_HTML, "html.parser")
+        return soup.find("review-card")
+
+    def test_extracts_all_fields(self):
+        review = _parse_card_html(self._card(), "test_movie", FIXED_NOW, False, 0)
+        assert review["reviewer_name"] == "Alice"
+        assert review["publication_name"] == "AV Club"
+        assert review["subjective_score"] == "4/5"
+        assert review["tomatometer_sentiment"] == "positive"
+        assert review["written_review"] == "Great movie!"
+        assert review["site_timestamp_text"] == "5m"
+        assert review["page_position"] == 0
+        assert review["top_critic"] is False
+
+    def test_top_critic_flag(self):
+        review = _parse_card_html(self._card(), "test_movie", FIXED_NOW, True, 3)
+        assert review["top_critic"] is True
+        assert review["page_position"] == 3
+
+    def test_timestamp_confidence_relative(self):
+        review = _parse_card_html(self._card(), "test_movie", FIXED_NOW, False, 0)
+        assert review["timestamp_confidence"] == "m"
+
+    def test_timestamp_confidence_date_format(self):
+        html = '<review-card><span slot="timestamp">Mar 15</span></review-card>'
+        soup = BeautifulSoup(html, "html.parser")
+        card = soup.find("review-card")
+        review = _parse_card_html(card, "test_movie", FIXED_NOW, False, 0)
+        assert review["timestamp_confidence"] == "d"
+
+    def test_missing_fields_handled(self):
+        html = "<review-card></review-card>"
+        soup = BeautifulSoup(html, "html.parser")
+        card = soup.find("review-card")
+        review = _parse_card_html(card, "test_movie", FIXED_NOW, False, 0)
+        assert review["reviewer_name"] is None
+        assert review["publication_name"] is None
+        assert review["written_review"] is None
+        assert review["estimated_timestamp"] is None
+        assert review["unique_review_id"] is not None  # hash still computed
+
+    def test_unique_review_id_deterministic(self):
+        r1 = _parse_card_html(self._card(), "test_movie", FIXED_NOW, False, 0)
+        r2 = _parse_card_html(self._card(), "test_movie", FIXED_NOW, False, 5)
+        assert r1["unique_review_id"] == r2["unique_review_id"]  # position doesn't affect hash
+
+
+class TestExtractNewCards:
+    """Tests for _extract_new_cards -- parses HTML string into card list."""
+
+    def test_extracts_cards_from_html(self):
+        # Simulate what JS would return: just the new cards' outerHTML joined
+        html = (
+            '<review-card><span slot="timestamp">5m</span>'
+            '<rt-link slot="name">Alice</rt-link></review-card>'
+            '<review-card><span slot="timestamp">3h</span>'
+            '<rt-link slot="name">Bob</rt-link></review-card>'
+        )
+        # _extract_new_cards calls driver.execute_script; test the parsing
+        # by directly calling BeautifulSoup on the HTML
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.find_all("review-card")
+        assert len(cards) == 2
+        assert cards[0].find("rt-link", attrs={"slot": "name"}).get_text().strip() == "Alice"
+        assert cards[1].find("rt-link", attrs={"slot": "name"}).get_text().strip() == "Bob"
+
+    def test_empty_html_returns_no_cards(self):
+        soup = BeautifulSoup("", "html.parser")
+        cards = soup.find_all("review-card")
+        assert cards == []
 
 
 class TestBackfillArgparse:

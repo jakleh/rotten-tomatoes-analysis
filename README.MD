@@ -89,7 +89,7 @@ DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie projec
 uv run --group dev pytest tests/ -v
 ```
 
-All 74 tests use mocks -- no network, browser, or database required.
+All 82 tests use mocks -- no network, browser, or database required.
 
 ## Deployment
 
@@ -135,7 +135,7 @@ docker run --rm -e DATABASE_URL="postgresql://..." rt-scraper:local
 ├── Dockerfile                   # Python 3.14 + Chromium + ChromeDriver
 ├── .dockerignore                # Excludes non-runtime files from image
 ├── tests/
-│   └── test_rotten_tomatoes.py  # 74 tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # 82 tests (pure logic, no network/browser)
 ├── scripts/
 │   ├── backfill.py              # One-time historical review backfill
 │   └── backfill_movies.csv      # Backfill config: slug + per-movie time_end (gitignored, local only)

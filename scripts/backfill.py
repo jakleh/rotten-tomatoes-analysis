@@ -54,7 +54,6 @@ from rotten_tomatoes import (
     SELECTORS,
     _build_driver,
     _find_selector,
-    _parse_cards,
     compute_review_id,
     convert_rel_timestamp_to_abs,
     get_db_connection,
@@ -101,6 +100,70 @@ def _parse_time_end(date_str: str) -> datetime:
 log = logging.getLogger("backfill")
 
 
+JS_COUNT_CARDS = "return document.querySelectorAll('review-card').length;"
+
+JS_EXTRACT_NEW_CARDS = """
+    const cards = document.querySelectorAll('review-card');
+    return Array.from(cards).slice(arguments[0]).map(c => c.outerHTML).join('');
+"""
+
+
+def _parse_card_html(card, movie_slug, scrape_time, top_critic, position):
+    """Parse a single BeautifulSoup review-card into a review dict."""
+    ts_tag = _find_selector(card, "timestamp")
+    rel_ts = ts_tag.get_text().strip() if ts_tag else ""
+
+    abs_ts = convert_rel_timestamp_to_abs(rel_ts, scrape_time) if rel_ts else None
+
+    unit = get_timestamp_unit(rel_ts)
+    confidence = unit if unit in ("m", "h", "d") else "d"
+
+    sentiment_tag = _find_selector(card, "sentiment")
+    tomatometer = sentiment_tag.get("sentiment") if sentiment_tag else None
+
+    rating_container = _find_selector(card, "rating")
+    subjective_score = None
+    if rating_container:
+        inner = rating_container.find("span", style=True)
+        if inner:
+            subjective_score = inner.get_text().strip()
+
+    name_tag = _find_selector(card, "reviewer_name")
+    reviewer_name = name_tag.get_text().strip() if name_tag else None
+
+    pub_tag = _find_selector(card, "publication")
+    publication = pub_tag.get_text().strip() if pub_tag else None
+
+    review_tag = _find_selector(card, "written_review")
+    written_review = review_tag.get_text().strip() if review_tag else None
+
+    return {
+        "unique_review_id": compute_review_id(
+            movie_slug, reviewer_name, publication, subjective_score
+        ),
+        "scrape_time": scrape_time,
+        "estimated_timestamp": abs_ts,
+        "site_timestamp_text": rel_ts,
+        "timestamp_confidence": confidence,
+        "tomatometer_sentiment": tomatometer,
+        "subjective_score": subjective_score,
+        "reviewer_name": reviewer_name,
+        "publication_name": publication,
+        "top_critic": top_critic,
+        "written_review": written_review,
+        "page_position": position,
+    }
+
+
+def _extract_new_cards(driver, prev_count):
+    """Extract HTML of cards added since prev_count via JS (no full DOM serialization)."""
+    new_html = driver.execute_script(JS_EXTRACT_NEW_CARDS, prev_count)
+    if not new_html:
+        return []
+    soup = BeautifulSoup(new_html, "html.parser")
+    return soup.find_all("review-card")
+
+
 def get_all_reviews(
     movie_slug: str,
     critic_filter: str = "all-critics",
@@ -110,6 +173,10 @@ def get_all_reviews(
     Unlike the main scraper's get_reviews(), this does NOT stop at date-format
     cards. It loads all pages and parses all cards, assigning date-format
     timestamps confidence='d'.
+
+    Uses incremental JS extraction: after each "Load More" click, only the
+    newly added cards are serialized and parsed, avoiding full-page DOM
+    serialization that can timeout on heavy pages.
     """
     url = f"https://www.rottentomatoes.com/m/{movie_slug}/reviews/{critic_filter}"
     top_critic = (critic_filter == "top-critics")
@@ -117,7 +184,9 @@ def get_all_reviews(
 
     log.info("Scraping ALL reviews: %s (%s)", movie_slug, critic_filter)
 
-    driver = _build_driver()
+    driver = _build_driver(js_heap_mb=1024)
+    driver.set_page_load_timeout(120)  # Backfill loads full review history; 30s too tight
+    reviews = []
     try:
         # Retry loop for initial page load
         for attempt in range(1, 4):
@@ -134,15 +203,21 @@ def get_all_reviews(
                     log.error("All 3 page load attempts failed for %s: %s", url, e)
                     return []
 
-        # Wait for at least one review card to appear (replaces fixed sleep)
+        # Wait for at least one review card to appear
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS["review_card"]))
         )
 
+        # Extract initial cards (before any "Load More" clicks)
+        initial_cards = _extract_new_cards(driver, 0)
+        for i, card in enumerate(initial_cards):
+            reviews.append(_parse_card_html(card, movie_slug, scrape_time, top_critic, i))
+        prev_card_count = len(initial_cards)
+        log.info("Initial page: %d cards", prev_card_count)
+
         # Load ALL pages (no date-format stop condition)
         wait = WebDriverWait(driver, 15)
         page_count = 0
-        prev_card_count = 0
         stall_count = 0
         while True:
             try:
@@ -159,9 +234,17 @@ def get_all_reviews(
                 log.debug("Clicked 'Load More' (page %d)", page_count)
                 time.sleep(random.uniform(2, 5))
 
-                # Stall detection: bail after 2 consecutive clicks that add no cards
-                soup = BeautifulSoup(driver.page_source, "html.parser")
-                current_card_count = len(soup.find_all(SELECTORS["review_card"]))
+                # Count cards via JS (cheap -- no DOM serialization)
+                try:
+                    current_card_count = driver.execute_script(JS_COUNT_CARDS)
+                except Exception:
+                    log.warning(
+                        "Card count JS failed after click %d -- skipping check.",
+                        page_count,
+                    )
+                    continue
+
+                # Stall detection
                 if current_card_count <= prev_card_count:
                     stall_count += 1
                     log.debug(
@@ -177,74 +260,68 @@ def get_all_reviews(
                         break
                 else:
                     stall_count = 0
+
+                # Extract only the new cards
+                try:
+                    new_cards = _extract_new_cards(driver, prev_card_count)
+                    for j, card in enumerate(new_cards):
+                        reviews.append(_parse_card_html(
+                            card, movie_slug, scrape_time, top_critic,
+                            prev_card_count + j,
+                        ))
+                    log.debug(
+                        "Extracted %d new cards (total: %d)",
+                        len(new_cards), len(reviews),
+                    )
+                except Exception:
+                    log.warning(
+                        "Card extraction failed after click %d -- will retry "
+                        "next click. %d reviews captured so far.",
+                        page_count, len(reviews),
+                    )
+
                 prev_card_count = current_card_count
 
             except (TimeoutException, ElementClickInterceptedException):
                 log.info("All pages loaded (%d 'Load More' clicks).", page_count)
                 break
 
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        cards = soup.find_all(SELECTORS["review_card"])
+        # Final extraction: pick up any cards missed by the last iteration
+        # (e.g., if extraction failed on the last click before the button disappeared).
+        # This is a small incremental extraction, not the full page.
+        try:
+            final_count = driver.execute_script(JS_COUNT_CARDS)
+            if final_count > prev_card_count:
+                final_cards = _extract_new_cards(driver, prev_card_count)
+                for j, card in enumerate(final_cards):
+                    reviews.append(_parse_card_html(
+                        card, movie_slug, scrape_time, top_critic,
+                        prev_card_count + j,
+                    ))
+                log.info("Final sweep: picked up %d missed cards", len(final_cards))
+        except Exception:
+            log.warning(
+                "Final card sweep failed -- continuing with %d reviews captured.",
+                len(reviews),
+            )
+
         log.info(
-            "Found %d total review cards for %s (%s)",
-            len(cards), movie_slug, critic_filter,
+            "Found %d total reviews for %s (%s)",
+            len(reviews), movie_slug, critic_filter,
         )
-        if len(cards) == 0:
-            snippet = driver.page_source[:500] if driver.page_source else "(empty)"
-            log.warning("0 cards found. Page source snippet:\n%s", snippet)
+        if len(reviews) == 0:
+            try:
+                snippet = driver.page_source[:500]
+            except Exception:
+                snippet = "(page_source unavailable)"
+            log.warning("0 reviews found. Page source snippet:\n%s", snippet)
     except Exception as e:
-        log.error("Selenium error for %s (%s): %s", movie_slug, critic_filter, e)
-        return []
+        log.error(
+            "Selenium error for %s (%s): %s. Returning %d reviews captured so far.",
+            movie_slug, critic_filter, e, len(reviews),
+        )
     finally:
         driver.quit()
-
-    # Parse ALL cards (including date-format) -- don't use _parse_cards which
-    # stops at date-format. Implement full parsing here.
-    reviews = []
-    for i, card in enumerate(cards):
-        ts_tag = _find_selector(card, "timestamp")
-        rel_ts = ts_tag.get_text().strip() if ts_tag else ""
-
-        abs_ts = convert_rel_timestamp_to_abs(rel_ts, scrape_time) if rel_ts else None
-
-        unit = get_timestamp_unit(rel_ts)
-        confidence = unit if unit in ("m", "h", "d") else "d"
-
-        sentiment_tag = _find_selector(card, "sentiment")
-        tomatometer = sentiment_tag.get("sentiment") if sentiment_tag else None
-
-        rating_container = _find_selector(card, "rating")
-        subjective_score = None
-        if rating_container:
-            inner = rating_container.find("span", style=True)
-            if inner:
-                subjective_score = inner.get_text().strip()
-
-        name_tag = _find_selector(card, "reviewer_name")
-        reviewer_name = name_tag.get_text().strip() if name_tag else None
-
-        pub_tag = _find_selector(card, "publication")
-        publication = pub_tag.get_text().strip() if pub_tag else None
-
-        review_tag = _find_selector(card, "written_review")
-        written_review = review_tag.get_text().strip() if review_tag else None
-
-        reviews.append({
-            "unique_review_id": compute_review_id(
-                movie_slug, reviewer_name, publication, subjective_score
-            ),
-            "scrape_time": scrape_time,
-            "estimated_timestamp": abs_ts,
-            "site_timestamp_text": rel_ts,
-            "timestamp_confidence": confidence,
-            "tomatometer_sentiment": tomatometer,
-            "subjective_score": subjective_score,
-            "reviewer_name": reviewer_name,
-            "publication_name": publication,
-            "top_critic": top_critic,
-            "written_review": written_review,
-            "page_position": i,
-        })
 
     log.info("Parsed %d reviews for %s (%s)", len(reviews), movie_slug, critic_filter)
     return reviews

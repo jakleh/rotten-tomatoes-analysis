@@ -211,7 +211,7 @@ def insert_review(conn, movie_slug: str, review: dict) -> bool:
 
 # -- Scraping ------------------------------------------------------------------
 
-def _build_driver() -> webdriver.Chrome:
+def _build_driver(js_heap_mb: int = 256) -> webdriver.Chrome:
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -219,7 +219,7 @@ def _build_driver() -> webdriver.Chrome:
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-plugins")
-    options.add_argument("--js-flags=--max-old-space-size=256")
+    options.add_argument(f"--js-flags=--max-old-space-size={js_heap_mb}")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument(
         "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
