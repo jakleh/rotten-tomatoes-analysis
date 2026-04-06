@@ -72,7 +72,7 @@ Cloud Run execution failed
 |   +-> 143 (SIGTERM): Timeout.
 |   |   Increase: gcloud run jobs update rt-scraper --task-timeout=1200s --region=us-east1
 |   +-> 1: General error. Check logs for traceback.
-|   +-> 2: argparse error or SystemExit(1). Check movies.json.
+|   +-> 2: argparse error. Check CLI flags.
 |
 +-> ImportError in traceback?
     +-> YES: Missing dependency. Rebuild image after `uv lock`.

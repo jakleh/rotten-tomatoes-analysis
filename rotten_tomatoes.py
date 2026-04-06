@@ -546,10 +546,10 @@ if __name__ == "__main__":
     else:
         movie_slugs = load_movie_config()
         if not movie_slugs:
-            log.error(
+            log.warning(
                 "No movies to scrape. Check %s or use --movie.", MOVIES_CONFIG_PATH
             )
-            raise SystemExit(1)
+            raise SystemExit(0)
 
     mode = "manual" if args.movie else "scheduled"
     log.info("=== Run started: mode=%s, movies=%s ===", mode, movie_slugs)
