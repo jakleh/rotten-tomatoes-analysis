@@ -20,6 +20,10 @@
 | H-16 | JS extraction fails for a click batch | Low (incremental extraction) | Batch skipped; reviews from prior clicks preserved. |
 | H-6 | Duplicate reviews (hash collision) | Very Low | Old score kept, silent |
 | H-7 | DB connection or insert fails for a movie | Low | Movie's reviews lost, other movies proceed |
+| H-20 | fix_top_critic: scrape returns 0 top-critic reviews | Medium | Movie not fixed, remains with top_critic=False |
+| H-21 | fix_top_critic: DB connection fails | Low | Movie not fixed, other movies in --all still proceed |
+| H-22 | fix_top_critic: UPDATE matches fewer rows than filtered hashes | Medium | Some reviews not corrected; hash mismatch (RT changed fields since backfill) |
+| H-23 | fix_top_critic: --time-end missing or wrong, post-cutoff reviews included | Medium (user error) | UPDATE touches reviews that shouldn't be in DB, or cutoff filters out all reviews |
 | H-8 | Health check misleading after filtering | High (when --time-end used) | False alarm on count delta |
 | H-9 | Wrong movie slug (typo) | Low (user error) | 0 reviews scraped |
 | H-10 | Confirmation prompt bypassed (piped stdin) | Very Low | Unintended execution |
@@ -71,8 +75,36 @@
 - Root cause: retry loop calls `driver.get()` on a driver whose session is already dead. Retries 2 and 3 are guaranteed to fail.
 - All-critics pass recovered because `get_all_reviews()` creates a fresh driver per call.
 - Impact is low: only one critic-filter pass is lost, and all-critics is a superset (minus `top_critic=True` flag)
+- **Recovery**: run `scripts/fix_top_critic.py --movie <slug>` to re-scrape top-critics and UPDATE matching rows to `top_critic=TRUE`. This was used to fix `fly_me_to_the_moon_2024` and `last_breath_2025` after the initial backfill.
 - Future fix: catch `InvalidSessionIdException` and create a new driver inside the retry loop
 - Cross-ref chrome.md A-8
+
+**H-20 (fix_top_critic: 0 reviews scraped or 0 after cutoff):**
+- `get_all_reviews()` returns `[]` on Chrome crash, network failure, or RT HTML change
+- Script logs ERROR and returns `scraped=0` — does not attempt DB writes
+- If reviews are scraped but all excluded by `time_end` cutoff, logs WARNING `"All reviews excluded by cutoff"` and returns `filtered=0` — also does not attempt DB writes
+- In `--all` mode, remaining movies still proceed
+- Use `--dry-run` first to confirm scraping works before committing changes
+- Cross-ref chrome.md, selenium.md, H-19
+
+**H-21 (fix_top_critic: DB connection fails):**
+- `get_db_connection()` wrapped in try/except — logs error, returns `error=True`, continues to next movie in `--all` mode
+- Same failure as H-7 but for the fix script
+- Cross-ref neon.md D-1, D-8
+
+**H-22 (fix_top_critic: hash mismatch — UPDATE < filtered hashes):**
+- If RT changed a reviewer name, publication, or subjective score since the original backfill, the MD5 hash won't match the DB row
+- Script logs WARNING with exact counts: `"Updated N rows but had M hashes after cutoff filter. K hashes did not match"`
+- Post-cutoff reviews are already filtered out before this check, so mismatches are genuine (not cutoff artifacts)
+- Non-zero `updated` means the fix partially worked; unmatched reviews need manual investigation
+- Diagnosis: compare scraped reviewer names against DB (`SELECT reviewer_name FROM reviews WHERE movie_slug = ...`) to find the mismatches
+- If the review was never inserted at all (backfill also crashed for all-critics), the hash simply won't match — same symptom, different cause
+
+**H-23 (fix_top_critic: --time-end missing or wrong):**
+- `--all` mode reads slugs and cutoffs from `backfill_movies.csv` (same source as backfill.py) — no manual `--time-end` needed
+- `--movie` mode: if movie has a cutoff in CSV but user doesn't pass `--time-end`, post-cutoff reviews are included in hash list. UPDATE targets only existing DB rows so no bad data is inserted, but the mismatch warning (H-22) fires for post-cutoff hashes that correctly aren't in the DB.
+- `--time-end` requires `--movie` (validated at parse time, same as backfill)
+- Prevention: prefer `--all` over `--movie` for movies with cutoffs, or always pass `--time-end` with `--movie`
 
 **H-4 (off-by-one):**
 - Strict `<` against next-day midnight; 4 boundary tests cover exact semantics
@@ -131,6 +163,11 @@
 | `DB connection failed for <slug> -- skipping inserts` | H-7 (connection failure, movie skipped) |
 | `DB error during inserts for <slug> -- rolling back` | H-7 (insert/commit failure, movie skipped) |
 | `OperationalError` or `Connection refused` | H-7 (within above messages) |
+| `No top-critic reviews scraped for <slug> -- nothing to fix` | H-20 (fix_top_critic: scrape failed) |
+| `All reviews excluded by cutoff -- nothing to fix` | H-20 (fix_top_critic: cutoff filtered all reviews) |
+| `DB connection failed for <slug> -- skipping` (fix_top_critic) | H-21 (fix_top_critic: DB unreachable) |
+| `DB error fixing <slug>` | H-21 (fix_top_critic: UPDATE/commit failed) |
+| `Updated N rows but had M hashes after cutoff filter. K hashes did not match` | H-22 (fix_top_critic: hash mismatch, post-cutoff already excluded) |
 
 ## Diagnosis Decision Tree
 
@@ -180,6 +217,38 @@ Backfill failure detected
     +-> Unexpectedly low inserts?
         +-> Most reviews already in DB (expected for re-runs)
         +-> Or cutoff excluded more than expected
+
+fix_top_critic.py failure detected
+|
++-> "No top-critic reviews scraped"?
+|   +-> H-20. Chrome crash or RT change. Try again; if repeats, cross-ref chrome.md.
+|
++-> "All reviews excluded by cutoff"?
+|   +-> H-20. All scraped reviews were after time_end date.
+|   +-> Is cutoff correct? Check --time-end value or backfill_movies.csv.
+|   +-> If cutoff is correct, no top-critic reviews exist before that date — nothing to fix.
+|
++-> "DB connection failed" or "DB error fixing"?
+|   +-> H-21. Check DATABASE_URL, Neon status. Cross-ref neon.md D-1, D-8.
+|
++-> "Updated N but had M hashes ... K hashes did not match"?
+|   +-> H-22. Post-cutoff reviews already excluded, so mismatches are genuine.
+|   +-> Compare scraped reviewer names against DB to find mismatches.
+|   +-> If updated > 0, partial fix succeeded. Unmatched reviews need manual UPDATE.
+|
++-> Large mismatch count when using --movie without --time-end?
+|   +-> H-23. Post-cutoff reviews included in hash list because no cutoff applied.
+|   +-> Use --all (reads cutoffs from CSV) or add --time-end to --movie command.
+|
++-> updated = filtered count, before_count = after_count?
+|   +-> Idempotent re-run. All rows already had top_critic=TRUE.
+|   +-> (PostgreSQL rowcount counts matched rows, not changed rows.)
+|   +-> Safe, no action needed.
+|
++-> updated = 0 and filtered > 0, no error logged?
+    +-> None of the filtered hashes matched any DB row. All hashes are mismatches.
+    +-> H-22 at 100%. Reviews changed on RT or were never inserted.
+    +-> WARNING log confirms: "K hashes did not match".
 ```
 
 ## Key Commands
@@ -202,6 +271,20 @@ psql $DATABASE_URL -c "SELECT reviewer_name, estimated_timestamp, site_timestamp
 
 # Check CSV for a specific movie's cutoff
 grep '<slug>' scripts/backfill_movies.csv
+
+# --- fix_top_critic.py ---
+
+# Dry run (scrape only, no DB writes)
+DATABASE_URL="..." uv run python scripts/fix_top_critic.py --movie <slug> --time-end 2024-07-15 --dry-run
+
+# Fix a single movie with explicit cutoff
+DATABASE_URL="..." uv run python scripts/fix_top_critic.py --movie <slug> --time-end 2024-07-15
+
+# Fix all movies from backfill_movies.csv (reads slugs and cutoffs from CSV)
+DATABASE_URL="..." uv run python scripts/fix_top_critic.py --all
+
+# Verify top_critic counts after fix
+psql $DATABASE_URL -c "SELECT movie_slug, COUNT(*) FILTER (WHERE top_critic) AS top, COUNT(*) AS total FROM reviews WHERE movie_slug IN ('fly_me_to_the_moon_2024', 'last_breath_2025') GROUP BY movie_slug"
 ```
 
 ## Research
