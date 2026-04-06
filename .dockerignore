@@ -8,7 +8,7 @@ scraper.log
 __pycache__
 tests/
 scripts/
-plan/
+planning/
 deploy/
 .github/
 *.md

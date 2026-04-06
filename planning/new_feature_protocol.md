@@ -4,7 +4,7 @@ Every non-trivial feature follows this sequence. Do not skip steps or reorder th
 
 ## Phase 1: Plan
 
-1. **Write a plan doc** in `plan/` (e.g., `plan/feature_name.md`).
+1. **Write a plan doc** in `planning/plans/` (e.g., `planning/plans/feature_name.md`).
    - Context: why this feature exists, what problem it solves
    - Files to modify (table)
    - Implementation steps with code sketches
@@ -14,7 +14,7 @@ Every non-trivial feature follows this sequence. Do not skip steps or reorder th
 
 ## Phase 2: Simulate Errors
 
-3. **Create or update an error playbook** in `plan/errors/` following the established format:
+3. **Create or update an error playbook** in `planning/errors/` following the established format:
    - Failure modes table (ID, description, likelihood, severity)
    - Prevention section (what we can guard against now)
    - Outside our control section (things we can only detect and diagnose)
