@@ -223,19 +223,19 @@ class TestComputeReviewId:
 
 class TestFindSelector:
     CARD_HTML = """
-    <review-card>
+    <review-card-critic>
         <span slot="timestamp">5m</span>
         <rt-link slot="name">Alice</rt-link>
         <rt-link slot="publication">AV Club</rt-link>
         <span slot="rating"><span style="font-weight:bold">4/5</span></span>
         <score-icon-critics sentiment="positive"></score-icon-critics>
         <div slot="review">Great movie!</div>
-    </review-card>
+    </review-card-critic>
     """
 
     def _card(self):
         soup = BeautifulSoup(self.CARD_HTML, "html.parser")
-        return soup.find("review-card")
+        return soup.find("review-card-critic")
 
     def test_finds_timestamp(self):
         tag = _find_selector(self._card(), "timestamp")
@@ -263,9 +263,9 @@ class TestFindSelector:
         assert tag.get_text().strip() == "Great movie!"
 
     def test_missing_selector_returns_none(self):
-        html = "<review-card></review-card>"
+        html = "<review-card-critic></review-card-critic>"
         soup = BeautifulSoup(html, "html.parser")
-        card = soup.find("review-card")
+        card = soup.find("review-card-critic")
         assert _find_selector(card, "timestamp") is None
         assert _find_selector(card, "reviewer_name") is None
         assert _find_selector(card, "written_review") is None
@@ -510,19 +510,19 @@ class TestParseCardHtml:
     """Tests for _parse_card_html -- parses a single BeautifulSoup card into a review dict."""
 
     CARD_HTML = """
-    <review-card>
+    <review-card-critic>
         <span slot="timestamp">5m</span>
         <rt-link slot="name">Alice</rt-link>
         <rt-link slot="publication">AV Club</rt-link>
         <span slot="rating"><span style="font-weight:bold">4/5</span></span>
         <score-icon-critics sentiment="positive"></score-icon-critics>
         <div slot="review">Great movie!</div>
-    </review-card>
+    </review-card-critic>
     """
 
     def _card(self):
         soup = BeautifulSoup(self.CARD_HTML, "html.parser")
-        return soup.find("review-card")
+        return soup.find("review-card-critic")
 
     def test_extracts_all_fields(self):
         review = _parse_card_html(self._card(), "test_movie", FIXED_NOW, False, 0)
@@ -545,16 +545,16 @@ class TestParseCardHtml:
         assert review["timestamp_confidence"] == "m"
 
     def test_timestamp_confidence_date_format(self):
-        html = '<review-card><span slot="timestamp">Mar 15</span></review-card>'
+        html = '<review-card-critic><span slot="timestamp">Mar 15</span></review-card-critic>'
         soup = BeautifulSoup(html, "html.parser")
-        card = soup.find("review-card")
+        card = soup.find("review-card-critic")
         review = _parse_card_html(card, "test_movie", FIXED_NOW, False, 0)
         assert review["timestamp_confidence"] == "d"
 
     def test_missing_fields_handled(self):
-        html = "<review-card></review-card>"
+        html = "<review-card-critic></review-card-critic>"
         soup = BeautifulSoup(html, "html.parser")
-        card = soup.find("review-card")
+        card = soup.find("review-card-critic")
         review = _parse_card_html(card, "test_movie", FIXED_NOW, False, 0)
         assert review["reviewer_name"] is None
         assert review["publication_name"] is None
@@ -574,22 +574,22 @@ class TestExtractNewCards:
     def test_extracts_cards_from_html(self):
         # Simulate what JS would return: just the new cards' outerHTML joined
         html = (
-            '<review-card><span slot="timestamp">5m</span>'
-            '<rt-link slot="name">Alice</rt-link></review-card>'
-            '<review-card><span slot="timestamp">3h</span>'
-            '<rt-link slot="name">Bob</rt-link></review-card>'
+            '<review-card-critic><span slot="timestamp">5m</span>'
+            '<rt-link slot="name">Alice</rt-link></review-card-critic>'
+            '<review-card-critic><span slot="timestamp">3h</span>'
+            '<rt-link slot="name">Bob</rt-link></review-card-critic>'
         )
         # _extract_new_cards calls driver.execute_script; test the parsing
         # by directly calling BeautifulSoup on the HTML
         soup = BeautifulSoup(html, "html.parser")
-        cards = soup.find_all("review-card")
+        cards = soup.find_all("review-card-critic")
         assert len(cards) == 2
         assert cards[0].find("rt-link", attrs={"slot": "name"}).get_text().strip() == "Alice"
         assert cards[1].find("rt-link", attrs={"slot": "name"}).get_text().strip() == "Bob"
 
     def test_empty_html_returns_no_cards(self):
         soup = BeautifulSoup("", "html.parser")
-        cards = soup.find_all("review-card")
+        cards = soup.find_all("review-card-critic")
         assert cards == []
 
 

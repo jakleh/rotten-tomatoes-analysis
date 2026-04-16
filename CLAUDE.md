@@ -181,6 +181,10 @@ docker build -t rt-scraper:local .
 
 `pyproject.toml`: beautifulsoup4, selenium, psycopg2-binary. Dev: pytest.
 
+## Workflow: Test Gate
+
+Always run `uv run --group dev pytest tests/ -v` after any change to `rotten_tomatoes.py`, `scripts/`, or `tests/` — before presenting work as ready to commit.
+
 ## Workflow: New Feature Protocol
 
 For any non-trivial feature, follow the protocol in [`planning/new_feature_protocol.md`](planning/new_feature_protocol.md): **Plan -> Simulate Errors -> Implement -> Validate**. This means writing a plan doc, creating/updating an error playbook in `planning/errors/`, implementing, then walking the error playbook against the code to catch gaps. Do not skip the error simulation phase.

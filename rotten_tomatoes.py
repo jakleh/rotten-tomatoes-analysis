@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -63,7 +64,7 @@ UNIT_ALIASES = {"m": "m", "min": "m", "h": "h", "hr": "h", "d": "d", "day": "d"}
 
 # Centralized selectors for RT review card HTML parsing
 SELECTORS = {
-    "review_card": "review-card",
+    "review_card": "review-card-critic",
     "timestamp": {"tag": "span", "attrs": {"slot": "timestamp"}},
     "reviewer_name": {"tag": "rt-link", "attrs": {"slot": "name"}},
     "publication": {"tag": "rt-link", "attrs": {"slot": "publication"}},
@@ -223,7 +224,7 @@ def insert_review(conn, movie_slug: str, review: dict) -> bool:
 
 def _build_driver(js_heap_mb: int = 256) -> webdriver.Chrome:
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -231,10 +232,7 @@ def _build_driver(js_heap_mb: int = 256) -> webdriver.Chrome:
     options.add_argument("--disable-plugins")
     options.add_argument(f"--js-flags=--max-old-space-size={js_heap_mb}")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument(
-        "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-    )
+    options.add_argument("--window-size=1920,1080")
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
         options.binary_location = chrome_bin
@@ -303,10 +301,10 @@ def get_reviews(
                 driver.execute_script(
                     "arguments[0].scrollIntoView({block: 'center'});", btn
                 )
-                time.sleep(1)
+                time.sleep(random.uniform(0.5, 1.5))
                 driver.execute_script("arguments[0].click();", btn)
                 log.debug("Clicked 'Load More'")
-                time.sleep(3)
+                time.sleep(random.uniform(2, 4))
 
                 soup = BeautifulSoup(driver.page_source, "html.parser")
                 cards = soup.find_all(SELECTORS["review_card"])
