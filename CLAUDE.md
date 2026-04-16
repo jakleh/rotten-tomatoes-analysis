@@ -219,6 +219,8 @@ Track known improvements or deferred work here. Remove items as they're complete
 2. Add mocked HTTP boundary tests for `_parse_cards()`
 3. Add Postgres integration tests (currently deferred -- all tests are pure logic)
 4. `bet-check` command: pre-bet data quality check comparing DB reviews against live RT site to catch meaningful edits (especially sentiment flips affecting tomatometer %)
+5. Set up Google Cloud MCP server so Claude Code can query Cloud Logging and Cloud Run job status directly (no more copy-pasting logs)
+6. Add `scripts/dump_page_source.py` diagnostic tool to dump rendered RT HTML via Selenium for selector debugging
 
 ## Security Decisions & Tradeoffs
 
