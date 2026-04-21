@@ -4,6 +4,6 @@
   {"slug": "dune_part_three", "enabled": false},
   {"slug": "you_me_and_tuscany", "enabled": false},
   {"slug": "lee_cronins_the_mummy", "enabled": false},
-  {"slug": "mother_mary", "enabled": true},
-  {"slug": "michael", "enabled": true}
+  {"slug": "mother_mary", "enabled": true, "theatrical_release_date": "2026-04-24"},
+  {"slug": "michael", "enabled": true, "theatrical_release_date": "2026-04-24"}
 ]
