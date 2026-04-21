@@ -15,6 +15,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import psycopg2
 import psycopg2.extras
@@ -85,8 +86,46 @@ INSERT_SPIKE_THRESHOLD = 50
 
 # -- Config --------------------------------------------------------------------
 
-def load_movie_config() -> list[str]:
-    """Load enabled movie slugs from movies.json."""
+def _parse_config_date(value, slug: str, field: str) -> datetime | None:
+    """Parse YYYY-MM-DD as midnight Eastern Time, return UTC datetime.
+
+    Returns None for None input (field is optional). Logs WARNING for non-string
+    values or unparseable date strings, treats them as None so scraping continues.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        log.warning(
+            "Invalid %s for movie %s (expected YYYY-MM-DD string, got %s). "
+            "Treating as None.",
+            field, slug, type(value).__name__,
+        )
+        return None
+    try:
+        return (
+            datetime.strptime(value, "%Y-%m-%d")
+            .replace(tzinfo=ZoneInfo("America/New_York"))
+            .astimezone(timezone.utc)
+        )
+    except ValueError:
+        log.warning(
+            "Invalid %s %r for movie %s (expected YYYY-MM-DD). Treating as None.",
+            field, value, slug,
+        )
+        return None
+
+
+def load_movie_config() -> list[dict]:
+    """Load enabled movie entries from movies.json.
+
+    Returns list of dicts: {slug, embargo_lift_date, theatrical_release_date}.
+    Date fields are datetime|None (parsed from YYYY-MM-DD at midnight ET, in UTC).
+
+    Soft-enforces theatrical_release_date for enabled entries: missing the field
+    logs ERROR at load time (silent-zero failures won't trigger ERROR escalation
+    without it), but the entry is still returned so one bad config doesn't block
+    every other movie from scraping.
+    """
     config_path = Path(MOVIES_CONFIG_PATH)
     if not config_path.exists():
         log.warning("Config file not found: %s", MOVIES_CONFIG_PATH)
@@ -99,10 +138,41 @@ def load_movie_config() -> list[str]:
     if not isinstance(data, list):
         log.error("Expected a JSON array in %s", MOVIES_CONFIG_PATH)
         return []
-    return [
-        e["slug"] for e in data
-        if isinstance(e, dict) and "slug" in e and e.get("enabled", True)
-    ]
+
+    entries = []
+    for e in data:
+        if not isinstance(e, dict) or "slug" not in e:
+            continue
+        if not e.get("enabled", True):
+            continue
+        slug = e["slug"]
+        entry = {
+            "slug": slug,
+            "embargo_lift_date": _parse_config_date(
+                e.get("embargo_lift_date"), slug, "embargo_lift_date"
+            ),
+            "theatrical_release_date": _parse_config_date(
+                e.get("theatrical_release_date"), slug, "theatrical_release_date"
+            ),
+        }
+        if entry["theatrical_release_date"] is None:
+            log.error(
+                "Enabled movie %s has no theatrical_release_date in movies.json. "
+                "Silent-zero failures for this movie will not trigger ERROR escalation. "
+                "Add the field (YYYY-MM-DD) to close this detection gap.",
+                slug,
+            )
+        elif (entry["embargo_lift_date"] is not None
+                and entry["embargo_lift_date"] > entry["theatrical_release_date"]):
+            log.warning(
+                "Movie %s: embargo_lift_date (%s) is after theatrical_release_date (%s). "
+                "Likely a typo — WARNING tier will be unreachable for this movie.",
+                slug,
+                entry["embargo_lift_date"].date(),
+                entry["theatrical_release_date"].date(),
+            )
+        entries.append(entry)
+    return entries
 
 
 # -- Timestamp utilities -------------------------------------------------------
@@ -459,19 +529,68 @@ def _parse_cards(
 
 # -- Main scrape ---------------------------------------------------------------
 
-def scrape(movie_slug: str) -> None:
+def _log_no_reviews(
+    movie_slug: str,
+    embargo_lift: datetime | None,
+    theatrical_release: datetime | None,
+    now: datetime,
+) -> None:
+    """Log appropriate severity when a movie has 0 reviews scraped.
+
+    - Past theatrical_release: ERROR (scraper likely broken)
+    - Past embargo_lift (not yet past release): WARNING (critics may still be publishing)
+    - Before embargo, or no dates configured: INFO (legitimately no reviews yet)
+    """
+    if theatrical_release is not None and now >= theatrical_release:
+        log.error(
+            "No reviews found for %s after theatrical release (%s). "
+            "Likely scraper issue — selector change, bot wall, or redirect.",
+            movie_slug, theatrical_release.date(),
+        )
+    elif embargo_lift is not None and now >= embargo_lift:
+        log.warning(
+            "No reviews found for %s after embargo lift (%s). "
+            "May be legitimate (critics still publishing) or early sign of scraper issue.",
+            movie_slug, embargo_lift.date(),
+        )
+    else:
+        log.info(
+            "No reviews found for %s (pre-embargo or no dates configured).",
+            movie_slug,
+        )
+
+
+def scrape(movie_entry: dict) -> None:
     """Scrape all recent reviews for a movie and insert new ones into Postgres.
 
     Uses "connect late" pattern: scrapes into memory first, connects to DB
-    only for batch insert.
+    only for batch insert. If scraping returns 0 reviews across both critic
+    filters, logs severity-gated "no reviews" message and returns before the
+    DB connect (saves a Neon cold start).
+
+    movie_entry: dict with keys slug, embargo_lift_date, theatrical_release_date.
     """
+    movie_slug = movie_entry["slug"]
     log.info("=== Scraping: %s ===", movie_slug)
 
     # Phase 1: Scrape all reviews into memory (no DB connection during Selenium)
     all_reviews = []
+    total_count = 0
     for critic_filter in CRITIC_FILTERS:
         reviews = get_reviews(movie_slug, critic_filter)
         all_reviews.append((critic_filter, reviews))
+        total_count += len(reviews)
+
+    # Silent-zero gate: 0 reviews total is either legit (pre-embargo) or a
+    # scraper failure. Severity is gated by config dates. Skip DB entirely.
+    if total_count == 0:
+        _log_no_reviews(
+            movie_slug,
+            movie_entry.get("embargo_lift_date"),
+            movie_entry.get("theatrical_release_date"),
+            datetime.now(timezone.utc),
+        )
+        return
 
     # Phase 2: Connect to DB and batch insert
     conn = get_db_connection()
@@ -540,17 +659,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.movie:
-        movie_slugs = [args.movie]
+        movie_entries = [{
+            "slug": args.movie,
+            "embargo_lift_date": None,
+            "theatrical_release_date": None,
+        }]
     else:
-        movie_slugs = load_movie_config()
-        if not movie_slugs:
+        movie_entries = load_movie_config()
+        if not movie_entries:
             log.warning(
                 "No movies to scrape. Check %s or use --movie.", MOVIES_CONFIG_PATH
             )
             raise SystemExit(0)
 
     mode = "manual" if args.movie else "scheduled"
-    log.info("=== Run started: mode=%s, movies=%s ===", mode, movie_slugs)
+    slugs = [e["slug"] for e in movie_entries]
+    log.info("=== Run started: mode=%s, movies=%s ===", mode, slugs)
 
-    for slug in movie_slugs:
-        scrape(slug)
+    for entry in movie_entries:
+        scrape(entry)

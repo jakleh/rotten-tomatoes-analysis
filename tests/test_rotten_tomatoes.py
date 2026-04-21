@@ -20,6 +20,8 @@ from rotten_tomatoes import (
     SELECTORS,
     _CloudRunFormatter,
     _find_selector,
+    _log_no_reviews,
+    _parse_config_date,
     compute_review_id,
     convert_rel_timestamp_to_abs,
     get_timestamp_unit,
@@ -276,21 +278,30 @@ class TestFindSelector:
 class TestLoadMovieConfig:
     def test_loads_enabled_movies(self, tmp_path):
         config = tmp_path / "movies.json"
-        config.write_text('[{"slug": "movie_a", "enabled": true}, {"slug": "movie_b", "enabled": true}]')
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, "theatrical_release_date": "2026-01-15"}, '
+            '{"slug": "movie_b", "enabled": true, "theatrical_release_date": "2026-02-20"}]'
+        )
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
-            assert load_movie_config() == ["movie_a", "movie_b"]
+            result = load_movie_config()
+        assert [e["slug"] for e in result] == ["movie_a", "movie_b"]
 
     def test_skips_disabled_movies(self, tmp_path):
         config = tmp_path / "movies.json"
-        config.write_text('[{"slug": "movie_a", "enabled": true}, {"slug": "movie_b", "enabled": false}]')
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, "theatrical_release_date": "2026-01-15"}, '
+            '{"slug": "movie_b", "enabled": false}]'
+        )
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
-            assert load_movie_config() == ["movie_a"]
+            result = load_movie_config()
+        assert [e["slug"] for e in result] == ["movie_a"]
 
     def test_enabled_defaults_to_true(self, tmp_path):
         config = tmp_path / "movies.json"
-        config.write_text('[{"slug": "movie_a"}]')
+        config.write_text('[{"slug": "movie_a", "theatrical_release_date": "2026-01-15"}]')
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
-            assert load_movie_config() == ["movie_a"]
+            result = load_movie_config()
+        assert [e["slug"] for e in result] == ["movie_a"]
 
     def test_missing_file_returns_empty(self, tmp_path):
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(tmp_path / "nope.json")):
@@ -304,15 +315,202 @@ class TestLoadMovieConfig:
 
     def test_skips_entries_without_slug(self, tmp_path):
         config = tmp_path / "movies.json"
-        config.write_text('[{"slug": "movie_a"}, {"enabled": true}]')
+        config.write_text(
+            '[{"slug": "movie_a", "theatrical_release_date": "2026-01-15"}, '
+            '{"enabled": true}]'
+        )
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
-            assert load_movie_config() == ["movie_a"]
+            result = load_movie_config()
+        assert [e["slug"] for e in result] == ["movie_a"]
 
     def test_non_array_returns_empty(self, tmp_path):
         config = tmp_path / "movies.json"
         config.write_text('{"slug": "movie_a"}')
         with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
             assert load_movie_config() == []
+
+    def test_parses_valid_embargo_and_release_dates(self, tmp_path):
+        config = tmp_path / "movies.json"
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, '
+            '"embargo_lift_date": "2026-07-10", '
+            '"theatrical_release_date": "2026-07-15"}]'
+        )
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            result = load_movie_config()
+        assert len(result) == 1
+        # Midnight ET during EDT = 04:00 UTC
+        assert result[0]["embargo_lift_date"] == datetime(2026, 7, 10, 4, 0, 0, tzinfo=timezone.utc)
+        assert result[0]["theatrical_release_date"] == datetime(2026, 7, 15, 4, 0, 0, tzinfo=timezone.utc)
+
+    def test_missing_embargo_date_is_none_no_log(self, tmp_path, caplog):
+        config = tmp_path / "movies.json"
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, '
+            '"theatrical_release_date": "2026-07-15"}]'
+        )
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            with caplog.at_level(logging.WARNING, logger="rotten_tomatoes"):
+                result = load_movie_config()
+        assert result[0]["embargo_lift_date"] is None
+        # No warnings about embargo — it's optional
+        assert not any(
+            "embargo" in r.getMessage().lower() for r in caplog.records
+        )
+
+    def test_missing_release_date_for_enabled_logs_error(self, tmp_path, caplog):
+        config = tmp_path / "movies.json"
+        config.write_text('[{"slug": "movie_a", "enabled": true}]')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            with caplog.at_level(logging.ERROR, logger="rotten_tomatoes"):
+                result = load_movie_config()
+        assert result[0]["slug"] == "movie_a"  # still returned
+        assert result[0]["theatrical_release_date"] is None
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(
+            "theatrical_release_date" in r.getMessage() and "movie_a" in r.getMessage()
+            for r in errors
+        )
+
+    def test_missing_release_date_for_disabled_no_log(self, tmp_path, caplog):
+        config = tmp_path / "movies.json"
+        config.write_text('[{"slug": "movie_a", "enabled": false}]')
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            with caplog.at_level(logging.ERROR, logger="rotten_tomatoes"):
+                result = load_movie_config()
+        assert result == []  # disabled entries excluded
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert not errors
+
+    def test_invalid_date_format_is_none_with_warning(self, tmp_path, caplog):
+        config = tmp_path / "movies.json"
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, '
+            '"theatrical_release_date": "not-a-date"}]'
+        )
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            with caplog.at_level(logging.WARNING, logger="rotten_tomatoes"):
+                result = load_movie_config()
+        assert result[0]["theatrical_release_date"] is None
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("not-a-date" in r.getMessage() for r in warnings)
+
+    def test_non_string_date_is_none_with_warning(self, tmp_path, caplog):
+        config = tmp_path / "movies.json"
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, '
+            '"theatrical_release_date": 20260715}]'
+        )
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            with caplog.at_level(logging.WARNING, logger="rotten_tomatoes"):
+                result = load_movie_config()
+        assert result[0]["theatrical_release_date"] is None
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("int" in r.getMessage() for r in warnings)
+
+    def test_embargo_after_release_logs_warning(self, tmp_path, caplog):
+        config = tmp_path / "movies.json"
+        config.write_text(
+            '[{"slug": "movie_a", "enabled": true, '
+            '"embargo_lift_date": "2026-07-20", '
+            '"theatrical_release_date": "2026-07-15"}]'
+        )
+        with patch("rotten_tomatoes.MOVIES_CONFIG_PATH", str(config)):
+            with caplog.at_level(logging.WARNING, logger="rotten_tomatoes"):
+                result = load_movie_config()
+        assert result[0]["slug"] == "movie_a"  # still returned
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "embargo_lift_date" in r.getMessage() and "after" in r.getMessage()
+            for r in warnings
+        )
+
+
+# -- _parse_config_date --------------------------------------------------------
+
+class TestParseConfigDate:
+    def test_summer_date_gives_edt_offset(self):
+        result = _parse_config_date("2026-07-15", "test_movie", "theatrical_release_date")
+        # Midnight EDT (UTC-4) = 04:00 UTC
+        assert result == datetime(2026, 7, 15, 4, 0, 0, tzinfo=timezone.utc)
+
+    def test_winter_date_gives_est_offset(self):
+        result = _parse_config_date("2026-01-15", "test_movie", "theatrical_release_date")
+        # Midnight EST (UTC-5) = 05:00 UTC
+        assert result == datetime(2026, 1, 15, 5, 0, 0, tzinfo=timezone.utc)
+
+    def test_none_input_returns_none(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="rotten_tomatoes"):
+            result = _parse_config_date(None, "test_movie", "theatrical_release_date")
+        assert result is None
+        assert len(caplog.records) == 0
+
+    def test_invalid_format_returns_none_with_warning(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="rotten_tomatoes"):
+            result = _parse_config_date("not a date", "test_movie", "theatrical_release_date")
+        assert result is None
+        assert any("not a date" in r.getMessage() for r in caplog.records)
+
+
+# -- _log_no_reviews -----------------------------------------------------------
+
+class TestLogNoReviews:
+    EMBARGO = datetime(2026, 7, 10, 4, 0, 0, tzinfo=timezone.utc)
+    RELEASE = datetime(2026, 7, 15, 4, 0, 0, tzinfo=timezone.utc)
+
+    def test_past_release_logs_error(self, caplog):
+        now = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO, logger="rotten_tomatoes"):
+            _log_no_reviews("test_movie", self.EMBARGO, self.RELEASE, now)
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "test_movie" in errors[0].getMessage()
+        assert "theatrical release" in errors[0].getMessage()
+
+    def test_past_embargo_not_release_logs_warning(self, caplog):
+        now = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO, logger="rotten_tomatoes"):
+            _log_no_reviews("test_movie", self.EMBARGO, self.RELEASE, now)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(warnings) == 1
+        assert len(errors) == 0
+        assert "test_movie" in warnings[0].getMessage()
+        assert "embargo lift" in warnings[0].getMessage()
+
+    def test_pre_embargo_logs_info(self, caplog):
+        now = datetime(2026, 7, 5, 12, 0, 0, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO, logger="rotten_tomatoes"):
+            _log_no_reviews("test_movie", self.EMBARGO, self.RELEASE, now)
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        elevated = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(infos) == 1
+        assert len(elevated) == 0
+
+    def test_no_dates_set_logs_info(self, caplog):
+        now = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO, logger="rotten_tomatoes"):
+            _log_no_reviews("test_movie", None, None, now)
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        elevated = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(infos) == 1
+        assert len(elevated) == 0
+
+    def test_only_release_past_logs_error(self, caplog):
+        now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO, logger="rotten_tomatoes"):
+            _log_no_reviews("test_movie", None, self.RELEASE, now)
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+
+    def test_only_embargo_past_logs_warning(self, caplog):
+        now = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
+        with caplog.at_level(logging.INFO, logger="rotten_tomatoes"):
+            _log_no_reviews("test_movie", self.EMBARGO, None, now)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(warnings) == 1
+        assert len(errors) == 0
 
 
 # -- _CloudRunFormatter --------------------------------------------------------

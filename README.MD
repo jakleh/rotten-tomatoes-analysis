@@ -57,11 +57,23 @@ Movies to track are defined in `movies.json`:
 
 ```json
 [
-  {"slug": "project_hail_mary", "enabled": true}
+  {
+    "slug": "project_hail_mary",
+    "enabled": true,
+    "embargo_lift_date": "2026-03-15",
+    "theatrical_release_date": "2026-03-20"
+  }
 ]
 ```
 
-The `slug` corresponds to the Rotten Tomatoes URL path (e.g., `rottentomatoes.com/m/project_hail_mary`).
+| Field | Required | Description |
+|---|---|---|
+| `slug` | yes | RT URL path (e.g., `rottentomatoes.com/m/project_hail_mary`) |
+| `enabled` | defaults to `true` | Set `false` to skip scraping without removing the entry |
+| `embargo_lift_date` | optional | `YYYY-MM-DD`. If set and passed with 0 reviews scraped, logs WARNING (early detection that the scraper may be broken) |
+| `theatrical_release_date` | soft-required for enabled entries | `YYYY-MM-DD`. If set and passed with 0 reviews scraped, logs ERROR (fires the Cloud Run alert). Missing it for an enabled entry logs ERROR at config load |
+
+Dates are anchored to midnight Eastern Time. See `planning/errors/silent_zero.md` for the full failure-mode playbook.
 
 ## Usage
 
@@ -89,7 +101,7 @@ DATABASE_URL="postgresql://..." uv run python scripts/backfill.py --movie projec
 uv run --group dev pytest tests/ -v
 ```
 
-All 82 tests use mocks -- no network, browser, or database required.
+All 104 tests use mocks -- no network, browser, or database required.
 
 ## Deployment
 
@@ -131,11 +143,11 @@ docker run --rm -e DATABASE_URL="postgresql://..." rt-scraper:local
 
 ```
 ├── rotten_tomatoes.py           # Main scraper
-├── movies.json                  # Movie config: [{slug, enabled}]
+├── movies.json                  # Movie config: [{slug, enabled, embargo_lift_date, theatrical_release_date}]
 ├── Dockerfile                   # Python 3.14 + Chromium + ChromeDriver
 ├── .dockerignore                # Excludes non-runtime files from image
 ├── tests/
-│   └── test_rotten_tomatoes.py  # 82 tests (pure logic, no network/browser)
+│   └── test_rotten_tomatoes.py  # 104 tests (pure logic, no network/browser)
 ├── scripts/
 │   ├── backfill.py              # One-time historical review backfill
 │   └── backfill_movies.csv      # Backfill config: slug + per-movie time_end (gitignored, local only)
