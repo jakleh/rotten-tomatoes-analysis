@@ -1,9 +1,17 @@
 [
-  {"slug": "the_odyssey_2026", "enabled": false},
-  {"slug": "avengers_doomsday", "enabled": false},
-  {"slug": "dune_part_three", "enabled": false},
-  {"slug": "you_me_and_tuscany", "enabled": false},
-  {"slug": "lee_cronins_the_mummy", "enabled": false},
   {"slug": "mother_mary", "enabled": true, "theatrical_release_date": "2026-04-24"},
-  {"slug": "michael", "enabled": true, "theatrical_release_date": "2026-04-24"}
+  {"slug": "michael", "enabled": true, "theatrical_release_date": "2026-04-24"},
+  {"slug": "animal_farm_2025", "enabled": true, "theatrical_release_date": "2026-05-01"},
+  {"slug": "the_devil_wears_prada_2", "enabled": true, "theatrical_release_date": "2026-05-01"},
+  {"slug": "mortal_kombat_ii", "enabled": false, "theatrical_release_date": "2026-05-08"},
+  {"slug": "the_sheep_detectives", "enabled": false, "theatrical_release_date": "2026-05-08"},
+  {"slug": "billie_eilish_hit_me_hard_and_soft_the_tour_live_in_3d", "enabled": false, "theatrical_release_date": "2026-05-08"},
+  {"slug": "in_the_grey", "enabled": false, "theatrical_release_date": "2026-05-15"},
+  {"slug": "star_wars_the_mandalorian_and_grogu", "enabled": false, "theatrical_release_date": "2026-05-22"},
+  {"slug": "backrooms", "enabled": false, "theatrical_release_date": "2026-05-29"},
+  {"slug": "pressure_2026", "enabled": false, "theatrical_release_date": "2026-05-29"},
+  {"slug": "spider_man_brand_new_day", "enabled": false, "theatrical_release_date": "2026-07-31"},
+  {"slug": "avengers_doomsday", "enabled": false, "theatrical_release_date": "2026-12-18"},
+  {"slug": "dune_part_three", "enabled": false, "theatrical_release_date": "2026-12-18"},
+  {"slug": "the_odyssey_2026", "enabled": false}
 ]
