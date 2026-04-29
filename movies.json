@@ -4,7 +4,7 @@
   {"slug": "animal_farm_2025", "enabled": true, "theatrical_release_date": "2026-05-01"},
   {"slug": "the_devil_wears_prada_2", "enabled": true, "theatrical_release_date": "2026-05-01"},
   {"slug": "mortal_kombat_ii", "enabled": false, "theatrical_release_date": "2026-05-08"},
-  {"slug": "the_sheep_detectives", "enabled": false, "theatrical_release_date": "2026-05-08"},
+  {"slug": "the_sheep_detectives", "enabled": true, "theatrical_release_date": "2026-05-08"},
   {"slug": "billie_eilish_hit_me_hard_and_soft_the_tour_live_in_3d", "enabled": false, "theatrical_release_date": "2026-05-08"},
   {"slug": "in_the_grey", "enabled": false, "theatrical_release_date": "2026-05-15"},
   {"slug": "star_wars_the_mandalorian_and_grogu", "enabled": false, "theatrical_release_date": "2026-05-22"},
