@@ -3,7 +3,7 @@
   {"slug": "stop_that_train", "enabled": true, "theatrical_release_date": "2026-06-12"},
   {"slug": "toy_story_5", "enabled": false, "theatrical_release_date": "2026-06-19"},
   {"slug": "girls_like_girls", "enabled": false, "theatrical_release_date": "2026-06-19"},
-  {"slug": "the_death_of_robin_hood", "enabled": false, "theatrical_release_date": "2026-06-19"},
+  {"slug": "the_death_of_robin_hood", "enabled": true, "theatrical_release_date": "2026-06-19"},
   {"slug": "supergirl_2026", "enabled": false, "theatrical_release_date": "2026-06-26"},
   {"slug": "the_odyssey_2026", "enabled": false, "theatrical_release_date": "2026-07-17"},
   {"slug": "spider_man_brand_new_day", "enabled": false, "theatrical_release_date": "2026-07-31"},
